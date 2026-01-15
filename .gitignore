@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+
+# PyInstaller
+installer/build/
+installer/dist/
+*.spec
+
+# Backupy
+backup/
+
+# Lokalne pliki
+local_version.txt
