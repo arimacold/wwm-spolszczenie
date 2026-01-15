@@ -4,7 +4,7 @@ import os, shutil, requests, hashlib, json
 from datetime import datetime
 
 # =================== KONFIG ===================
-REPO = "TWOJ_LOGIN/wwm-spolszczenie"
+REPO = "arimacold/wwm-spolszczenie"
 FILES = ["translate_words_map_en", "translate_words_map_en_diff"]
 
 BASE_URL = f"https://raw.githubusercontent.com/{REPO}/main"
