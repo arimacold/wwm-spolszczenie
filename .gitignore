@@ -1,14 +1,13 @@
-# Python
+# runtime
+installed_version.txt
+logs/
+backup/
+
+# python
 __pycache__/
 *.pyc
 
-# PyInstaller
-installer/build/
-installer/dist/
+# pyinstaller
+build/
+dist/
 *.spec
-
-# Backupy
-backup/
-
-# Lokalne pliki
-local_version.txt
