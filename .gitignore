@@ -1,0 +1,5 @@
+﻿build/
+dist/
+*.build/
+*.onefile-build/
+__pycache__/
