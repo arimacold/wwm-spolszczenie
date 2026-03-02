@@ -26,7 +26,7 @@ Ponieważ instalator jest projektem fanowskim i nie posiada płatnego certyfikat
 
 \* Wybierz \*\*"Uruchom mimo to"\*\*.
 
-Plik jest w 100% bezpieczny, co możesz sprawdzić skanując go w serwisie VirusTotal.
+Plik jest w 100% bezpieczny.
 
 
 
