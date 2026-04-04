@@ -42,5 +42,5 @@ Jeśli doceniasz moją pracę nad spolszczeniem, możesz postawić mi wirtualną
 
 \*Autor: Arima\*
 
-\*Wersja: 1.0.0\*
+\*Wersja: 0.0.8a\*
 
