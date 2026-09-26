@@ -162,7 +162,6 @@ class WWMInstaller(ctk.CTk):
         ctk.CTkButton(self.footer, text="📖 Poradnik Steam", command=lambda: webbrowser.open(STEAM_GUIDE_URL), fg_color="#171a21", hover_color="#2a2e38").pack(side="left", padx=30)
         ctk.CTkButton(self.footer, text="☕ Wesprzyj projekt", command=lambda: webbrowser.open(COFFEE_URL), fg_color="#4d4d4d", hover_color="#5d5d5d").pack(side="right", padx=30)
 
-    # BEZPIECZNE AKTUALIZACJE GUI
     def set_progress(self, val, detail_text):
         self.after(0, self._set_progress, val, detail_text)
 
@@ -216,7 +215,6 @@ class WWMInstaller(ctk.CTk):
         ctk.CTkButton(finish_win, text="☕ Postaw kawę dla Arima", fg_color="#FF813F", text_color="black", font=("Segoe UI", 14, "bold"),
                        command=lambda: webbrowser.open(COFFEE_URL)).pack(pady=20)
 
-    # URUCHAMIANIE ZADAŃ W WĄTKACH
     def run_install(self): 
         self.toggle_buttons(False)
         threading.Thread(target=self.install_logic, args=("files",), daemon=True).start()
@@ -262,6 +260,8 @@ class WWMInstaller(ctk.CTk):
         p1_package = os.path.join(self.game_path, "Package", "HD", "oversea", "locale")
         p2_localdata = os.path.join(self.game_path, "LocalData", "Patch", "HD", "oversea", "locale")
         
+        safe_data_dir = os.path.join(self.game_path, "Spolszczenie_Data")
+        
         files_main = [f"translate_words_map_{lang}", f"translate_words_map_{lang}__small"]
         files_diff = [f"translate_words_map_{lang}_diff", f"translate_words_map_{lang}__small_diff"]
 
@@ -272,7 +272,6 @@ class WWMInstaller(ctk.CTk):
         progress_per_task = 0.85 / total_tasks if total_tasks > 0 else 0
 
         try:
-            # 1. Główne pliki językowe (Package)
             for f_name in files_main:
                 target = os.path.abspath(os.path.join(p1_package, f_name))
                 backup = target + ".backup"
@@ -290,7 +289,7 @@ class WWMInstaller(ctk.CTk):
                     self.download_file(url, target, base_p, progress_per_task, f_name)
                     current_task += 1
                 
-                else: # PRZYWRACANIE
+                else: 
                     self.set_progress(0.1 + (current_task * 0.4), f"Przywracanie: {f_name}...")
                     if os.path.exists(target):
                         os.chmod(target, stat.S_IWRITE)
@@ -303,11 +302,10 @@ class WWMInstaller(ctk.CTk):
                         self.download_file(url, target, 0.1, 0.4, f_name)
                     current_task += 1
 
-            # 2. Pliki DIFF (LocalData) - obsługa "Watchera"
+            os.makedirs(safe_data_dir, exist_ok=True)
             for f_name in files_diff:
                 target = os.path.abspath(os.path.join(p2_localdata, f_name))
-                pol_backup = target + ".pol"
-                os.makedirs(os.path.dirname(target), exist_ok=True)
+                pol_backup = os.path.join(safe_data_dir, f_name + ".pol")
                 
                 if mode == "files":
                     if os.path.exists(pol_backup): os.chmod(pol_backup, stat.S_IWRITE)
@@ -321,11 +319,12 @@ class WWMInstaller(ctk.CTk):
                     self.set_progress(0.9, "Czyszczenie plików DIFF...")
                     for t in (target, pol_backup):
                         if os.path.exists(t):
-                            os.chmod(t, stat.S_IWRITE)
-                            os.remove(t)
+                            try:
+                                os.chmod(t, stat.S_IWRITE)
+                                os.remove(t)
+                            except: pass
                     current_task += 1
 
-            # 3. Zakończenie i wersjonowanie
             v_file = os.path.abspath(os.path.join(p1_package, "polish_version.txt"))
             if mode == "files":
                 rv = requests.get(f"{RAW_URL}version.txt", timeout=5)
@@ -353,7 +352,6 @@ class WWMInstaller(ctk.CTk):
         finally:
             self.after(0, self.reset_buttons)
 
-    # MECHANIZM URUCHAMIANIA I PODMIANY W LOCIE
     def launch_and_patch(self):
         if not self.game_path:
             self.ui_msg_error("Błąd", "Wskaż folder gry przed uruchomieniem!")
@@ -362,30 +360,49 @@ class WWMInstaller(ctk.CTk):
 
         lang = self.lang_var.get()
         p2_localdata = os.path.join(self.game_path, "LocalData", "Patch", "HD", "oversea", "locale")
-        
         target_diff = os.path.join(p2_localdata, f"translate_words_map_{lang}_diff")
-        pol_source = target_diff + ".pol"
+        
+        safe_data_dir = os.path.join(self.game_path, "Spolszczenie_Data")
+        os.makedirs(safe_data_dir, exist_ok=True)
+        pol_source = os.path.join(safe_data_dir, f"translate_words_map_{lang}_diff.pol")
 
         if not os.path.exists(pol_source):
-            self.ui_msg_error("Błąd", "Nie odnaleziono polskiego pliku DIFF! Najpierw kliknij 'ZAINSTALUJ / AKTUALIZUJ'.")
-            self.after(0, self.reset_buttons)
-            return
+            self.set_progress(0.05, "Inicjalizowanie plików injectora...")
+            try:
+                url = f"{RAW_URL}files/{lang}/translate_words_map_{lang}_diff"
+                res = requests.get(url, stream=True, timeout=15)
+                if res.status_code == 200:
+                    with open(pol_source, "wb") as f:
+                        for chunk in res.iter_content(chunk_size=8192):
+                            if chunk: f.write(chunk)
+                else:
+                    self.ui_msg_error("Błąd", "Nie udało się pobrać pliku injectora. Kliknij 'ZAINSTALUJ / AKTUALIZUJ'.")
+                    self.after(0, self.reset_buttons)
+                    return
+            except Exception as e:
+                self.ui_msg_error("Błąd sieci", f"Upewnij się, że masz internet: {e}")
+                self.after(0, self.reset_buttons)
+                return
+
+        # Wymuszamy na grze proces weryfikacji i pobierania pliku poprzez jego wcześniejsze usunięcie z aktywnego folderu
+        if os.path.exists(target_diff):
+            try:
+                os.chmod(target_diff, stat.S_IWRITE)
+                os.remove(target_diff)
+            except Exception: pass
 
         self.set_progress(0.1, "Uruchamianie gry...")
         
         if self.version_var.get() == "steam":
-            # Niezawodne uruchomienie przez oficjalny protokół Steam z prawidłowym AppID
             try:
                 os.startfile("steam://rungameid/3564740")
             except Exception:
                 self.ui_msg_info("Informacja", "Steam nie odpowiedział automatycznie. Uruchom grę ręcznie z biblioteki.")
         else:
-            # Dla Epic/Launcher szukamy pliku .exe w głównym folderze oraz w podfolderach
             exe_names = ["WhereWindsMeet.exe", "WWM.exe", "WWM_Game.exe", "Launcher.exe"]
             exe_path = None
             
             for root, dirs, files in os.walk(self.game_path):
-                # Ograniczenie głębokości do 3 folderów, by nie przeszukiwać tysięcy plików systemowych
                 if root[len(self.game_path):].count(os.sep) > 3:
                     continue
                 for file in files:
@@ -403,35 +420,50 @@ class WWMInstaller(ctk.CTk):
             else:
                 self.ui_msg_info("Informacja", "Nie znaleziono pliku .exe. Uruchom grę ręcznie ze swojej platformy.")
 
-        # Zawsze uruchamiamy Watchera (nawet jak gracz finalnie odpali grę ręcznie)
         self._watcher_thread(target_diff, pol_source)
 
     def _watcher_thread(self, target_diff, pol_source):
-        self.set_progress(0.3, "Oczekiwanie na weryfikację plików przez grę (Możesz uruchomić grę)...")
+        self.set_progress(0.3, "Oczekiwanie na grę (Czas na ręczne włączenie: 5 minut)...")
         
+        try:
+            pol_size = os.path.getsize(pol_source)
+        except Exception:
+            pol_size = 0
+            
         start_time = time.time()
-        initial_mtime = os.path.getmtime(target_diff) if os.path.exists(target_diff) else 0
+        patched_once = False
+        last_patch_time = time.time()
 
-        patched = False
-        while time.time() - start_time < 120:
-            time.sleep(1)
+        # Czekamy maksymalnie 5 minut - skanujemy folder z ultrawysoką częstotliwością (0.1 sekundy)
+        while time.time() - start_time < 300:
+            time.sleep(0.1)
+            
             if os.path.exists(target_diff):
-                current_mtime = os.path.getmtime(target_diff)
-                
-                if current_mtime != initial_mtime or (time.time() - start_time > 35):
-                    try:
-                        time.sleep(2)
-                        if os.path.exists(target_diff):
+                try:
+                    current_size = os.path.getsize(target_diff)
+                    # Jeżeli rozmiar pliku pobranego przez grę nie zgadza się z naszym (gra wrzuciła angielski oryginał)
+                    if current_size != pol_size:
+                        try:
                             os.chmod(target_diff, stat.S_IWRITE)
-                        shutil.copy2(pol_source, target_diff)
-                        self.set_progress(1.0, "Spolszczenie zaaplikowane w locie pomyślnie!")
-                        patched = True
-                        break
-                    except Exception:
-                        pass
+                            shutil.copy2(pol_source, target_diff)
+                            patched_once = True
+                            last_patch_time = time.time()
+                            self.set_progress(0.8, "Wstrzykiwanie danych (Nie zamykaj programu)...")
+                        except PermissionError:
+                            # Gra aktualnie czyta/pisze plik (blokada) - pomijamy i próbujemy za 0.1s
+                            pass
+                except Exception:
+                    pass
+            
+            # Bezpiecznik: Jeżeli udało się podmienić plik, i gra przez 8 sekund nie próbowała go cofnąć, to znaczy że przeszliśmy!
+            if patched_once and (time.time() - last_patch_time > 8):
+                self.set_progress(1.0, "Spolszczenie zaaplikowane w locie pomyślnie! Miłej gry.")
+                self.after(0, self.reset_buttons)
+                return
 
-        if not patched:
-            self.set_progress(0, "Przekroczono czas (Plik wgrany wymuszonym trybem awaryjnym).")
+        # Jeśli pętla minęła i przez 5 minut nic się nie wydarzyło
+        if not patched_once:
+            self.set_progress(0, "Przekroczono czas. Uruchom grę na platformie szybciej.")
             try:
                 if os.path.exists(target_diff): os.chmod(target_diff, stat.S_IWRITE)
                 shutil.copy2(pol_source, target_diff)
