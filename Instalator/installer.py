@@ -23,7 +23,6 @@ class WWMInstaller(ctk.CTk):
         self.geometry("600x820")
         ctk.set_appearance_mode("dark")
         
-        # Ustawienie ikony okna (jeśli plik ikona.ico istnieje w folderze)
         try:
             self.iconbitmap("ikona.ico")
         except Exception:
@@ -96,13 +95,13 @@ class WWMInstaller(ctk.CTk):
 
         self.plat_frame = ctk.CTkFrame(self, fg_color="#2b2b2b", corner_radius=10)
         self.plat_frame.pack(pady=8, padx=40, fill="x")
-        ctk.CTkLabel(self.plat_frame, text="Wybierz wersję gry:", font=("Segoe UI", 13)).pack(pady=5)
+        ctk.CTkLabel(self.plat_frame, text="Wybierz platformę:", font=("Segoe UI", 13)).pack(pady=5)
         
         self.rb_steam = ctk.CTkRadioButton(self.plat_frame, text="Steam", variable=self.version_var, value="steam", 
                             command=self.refresh_path, border_color="#555555", fg_color="#3b8ed0", 
                             hover_color="#5fa3d9", border_width_checked=6)
         self.rb_steam.pack(side="left", padx=60, pady=10)
-        self.rb_launcher = ctk.CTkRadioButton(self.plat_frame, text="Launcher / Epic", variable=self.version_var, value="launcher", 
+        self.rb_launcher = ctk.CTkRadioButton(self.plat_frame, text="Epic / Launcher", variable=self.version_var, value="launcher", 
                             command=self.refresh_path, border_color="#555555", fg_color="#3b8ed0", 
                             hover_color="#5fa3d9", border_width_checked=6)
         self.rb_launcher.pack(side="right", padx=60, pady=10)
@@ -217,7 +216,7 @@ class WWMInstaller(ctk.CTk):
         ctk.CTkButton(finish_win, text="☕ Postaw kawę dla Arima", fg_color="#FF813F", text_color="black", font=("Segoe UI", 14, "bold"),
                        command=lambda: webbrowser.open(COFFEE_URL)).pack(pady=20)
 
-    # UROCHOMIANIE ZADAŃ W WĄTKACH
+    # URUCHAMIANIE ZADAŃ W WĄTKACH
     def run_install(self): 
         self.toggle_buttons(False)
         threading.Thread(target=self.install_logic, args=("files",), daemon=True).start()
@@ -311,7 +310,6 @@ class WWMInstaller(ctk.CTk):
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 
                 if mode == "files":
-                    # Pobieramy spolszczone pliki DIFF bezpośrednio jako ".pol", aby Watcher miał co podmieniać
                     if os.path.exists(pol_backup): os.chmod(pol_backup, stat.S_IWRITE)
                     
                     sub = lang
@@ -321,7 +319,6 @@ class WWMInstaller(ctk.CTk):
                     current_task += 1
                 else:
                     self.set_progress(0.9, "Czyszczenie plików DIFF...")
-                    # Usuwamy polskie kopie zapasowe oraz pliki aktywne, by gra pobrała oryginał
                     for t in (target, pol_backup):
                         if os.path.exists(t):
                             os.chmod(t, stat.S_IWRITE)
@@ -356,7 +353,7 @@ class WWMInstaller(ctk.CTk):
         finally:
             self.after(0, self.reset_buttons)
 
-    # MECHANIZM URUCHAMIANIA I PODMIANY W LOCIE (OMINIĘCIE ZAWIESZENIA 99.5%)
+    # MECHANIZM URUCHAMIANIA I PODMIANY W LOCIE
     def launch_and_patch(self):
         if not self.game_path:
             self.ui_msg_error("Błąd", "Wskaż folder gry przed uruchomieniem!")
@@ -375,44 +372,66 @@ class WWMInstaller(ctk.CTk):
             return
 
         self.set_progress(0.1, "Uruchamianie gry...")
+        
         if self.version_var.get() == "steam":
-            webbrowser.open("steam://rungameid/3619908590")
+            # Niezawodne uruchomienie przez oficjalny protokół Steam z prawidłowym AppID
+            try:
+                os.startfile("steam://rungameid/3564740")
+            except Exception:
+                self.ui_msg_info("Informacja", "Steam nie odpowiedział automatycznie. Uruchom grę ręcznie z biblioteki.")
         else:
-            exe_path = os.path.join(self.game_path, "WhereWindsMeet.exe")
-            if os.path.exists(exe_path):
-                os.startfile(exe_path)
+            # Dla Epic/Launcher szukamy pliku .exe w głównym folderze oraz w podfolderach
+            exe_names = ["WhereWindsMeet.exe", "WWM.exe", "WWM_Game.exe", "Launcher.exe"]
+            exe_path = None
+            
+            for root, dirs, files in os.walk(self.game_path):
+                # Ograniczenie głębokości do 3 folderów, by nie przeszukiwać tysięcy plików systemowych
+                if root[len(self.game_path):].count(os.sep) > 3:
+                    continue
+                for file in files:
+                    if file in exe_names:
+                        exe_path = os.path.join(root, file)
+                        break
+                if exe_path:
+                    break
+                    
+            if exe_path:
+                try:
+                    os.startfile(exe_path)
+                except Exception:
+                    self.ui_msg_info("Informacja", "Nie udało się włączyć gry automatycznie. Uruchom ją ręcznie.")
             else:
-                webbrowser.open("steam://rungameid/3619908590")
+                self.ui_msg_info("Informacja", "Nie znaleziono pliku .exe. Uruchom grę ręcznie ze swojej platformy.")
 
+        # Zawsze uruchamiamy Watchera (nawet jak gracz finalnie odpali grę ręcznie)
         self._watcher_thread(target_diff, pol_source)
 
     def _watcher_thread(self, target_diff, pol_source):
-        self.set_progress(0.3, "Gra uruchomiona. Oczekiwanie na weryfikację plików...")
+        self.set_progress(0.3, "Oczekiwanie na weryfikację plików przez grę (Możesz uruchomić grę)...")
         
         start_time = time.time()
         initial_mtime = os.path.getmtime(target_diff) if os.path.exists(target_diff) else 0
 
         patched = False
-        while time.time() - start_time < 90:
+        while time.time() - start_time < 120:
             time.sleep(1)
             if os.path.exists(target_diff):
                 current_mtime = os.path.getmtime(target_diff)
-                # Wykrycie nadpisania przez serwer gry LUB minięcie bezpiecznego czasu pętli (20s)
-                if current_mtime != initial_mtime or (time.time() - start_time > 20):
+                
+                if current_mtime != initial_mtime or (time.time() - start_time > 35):
                     try:
-                        time.sleep(2) # Odczekanie na zwolnienie pliku przez serwer
+                        time.sleep(2)
                         if os.path.exists(target_diff):
                             os.chmod(target_diff, stat.S_IWRITE)
                         shutil.copy2(pol_source, target_diff)
-                        self.set_progress(1.0, "Spolszczenie zaaplikowane pomyślnie!")
+                        self.set_progress(1.0, "Spolszczenie zaaplikowane w locie pomyślnie!")
                         patched = True
                         break
                     except Exception:
-                        pass # Plik zablokowany, kolejna próba w pętli
+                        pass
 
         if not patched:
-            self.set_progress(0, "Przekroczono czas oczekiwania (Plik wgrany wymuszonym trybem).")
-            # Próba wgrania mimo upływu czasu (Fallback)
+            self.set_progress(0, "Przekroczono czas (Plik wgrany wymuszonym trybem awaryjnym).")
             try:
                 if os.path.exists(target_diff): os.chmod(target_diff, stat.S_IWRITE)
                 shutil.copy2(pol_source, target_diff)
