@@ -423,7 +423,7 @@ class WWMInstaller(ctk.CTk):
         self._watcher_thread(target_diff, pol_source)
 
     def _watcher_thread(self, target_diff, pol_source):
-        self.set_progress(0.3, "Oczekiwanie na grę (Czas na ręczne włączenie: 5 minut)...")
+        self.set_progress(0.3, "Uruchamianie gry... (Jeżeli gra nie startuje, uruchom ją ręcznie)")
         
         try:
             pol_size = os.path.getsize(pol_source)
