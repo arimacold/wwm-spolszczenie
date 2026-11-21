@@ -25,7 +25,7 @@ from .scene import FxOverlay, SceneWidget, make_cursor, make_icon
 from .widgets import (TITLE_FAMILIES, AuthorsFlyout, GlassCard, GlowButton, IconTile, MessageDialog, PathPill, ProgressTrack, Segmented,
                       ShadowLabel, StatusBadge, TitleBar, Theme, body_font)
 
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.0.1"
 MOOD_FOR_LANGUAGE = {"en": "day", "de": "night"}
 STATUS_COLORS = {"current": "#3ddc84", "outdated": "#ffc94d", "incomplete": "#ffc94d", "legacy": "#ffc94d",
                  "unknown": "#ffc94d", "none": "#ff7a7a", "no_game": "#ff5d5d", "error": "#ff7a7a"}
@@ -40,6 +40,7 @@ class Bridge(QObject):
     done = Signal(str, object)
     failed = Signal(str, str)
     info = Signal(str, str)
+    ask = Signal(object, object)      # (lista plików, pudełko z odpowiedzią) – pytanie „użyć mimo to?"
     finished = Signal()
 
 
@@ -87,6 +88,7 @@ class MainWindow(QWidget):
         self.bridge.done.connect(self.on_done)
         self.bridge.failed.connect(self.on_failed)
         self.bridge.info.connect(lambda title, text: self.show_message(title, text))
+        self.bridge.ask.connect(self.on_ask)
         self.bridge.finished.connect(self.on_finished)
 
         self.scene.progress_source = self.track.displayed
@@ -357,8 +359,27 @@ class MainWindow(QWidget):
             self.update_rails()
 
     # ------------------------------------------------------------- ścieżka i status
+    def german_pack_missing(self) -> bool:
+        """Pakiet niemiecki pobiera dopiero gra (po wybraniu języka) – bez niego nie ma jeszcze czego podmieniać."""
+        if self.language != "de" or not self.game_path:
+            return False
+        return not (Path(self.game_path) / core.DIFF_DIR / core.expected_names("de")["diff"]).exists()
+
     def update_hint(self) -> None:
-        self.hint.setText(f"Po instalacji wybierz w ustawieniach gry język: {LANGUAGES[self.language]}.")
+        if self.german_pack_missing():
+            self.hint.setText("Najpierw uruchom grę i wybierz Deutsch, by pobrać pakiet językowy.")
+        else:
+            self.hint.setText(f"Po instalacji wybierz w ustawieniach gry język: {LANGUAGES[self.language]}.")
+
+    def show_german_notice(self) -> None:
+        if self.language == "de" and not self.busy and self.german_pack_missing():
+            self.show_message(
+                "Najpierw pobierz pakiet niemiecki",
+                "Pakiet języka niemieckiego pobiera dopiero sama gra. Zanim zainstalujesz spolszczenie:\n\n"
+                "1.  Uruchom grę.\n"
+                "2.  W ustawieniach gry wybierz język Deutsch i poczekaj na pobranie pakietu.\n"
+                "3.  Zamknij grę i wróć do instalatora.\n\n"
+                "Bez tego instalator nie ma jeszcze czego podmienić.")
 
     def refresh_path(self) -> None:
         self.game_path = find_game_path(self.platform)
@@ -366,6 +387,7 @@ class MainWindow(QWidget):
         self.refresh_status()
 
     def refresh_status(self) -> None:
+        self.update_hint()
         self.generation += 1
         generation, path, language, base = self.generation, self.game_path, self.language, self.base_url
         self.badge.set_status("Sprawdzanie…", "#9aa4c0", "", True)
@@ -421,6 +443,8 @@ class MainWindow(QWidget):
         self.scene.set_mood(MOOD_FOR_LANGUAGE[value])
         self.update_hint()
         self.refresh_status()
+        if value == "de" and self.german_pack_missing():
+            QTimer.singleShot(250, self.show_german_notice)
 
     def browse_path(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Wskaż główny folder gry Where Winds Meet (ten z folderem Package)")
@@ -472,8 +496,17 @@ class MainWindow(QWidget):
 
     def _worker(self, kind: str, path: str, platform: str, language: str) -> None:
         bridge = self.bridge
+        def confirm(names: list) -> bool:
+            """Wątek roboczy czeka na odpowiedź użytkownika (z możliwością przerwania)."""
+            box = {"answer": False, "event": threading.Event()}
+            bridge.ask.emit(names, box)
+            while not box["event"].wait(0.2):
+                if self.cancelled.is_set():
+                    return False
+            return bool(box["answer"])
+
         engine = Engine(path, language, bridge.progress.emit, self.cancelled, self.base_url,
-                        notify=lambda text: bridge.info.emit("Informacja", text))
+                        notify=lambda text: bridge.info.emit("Informacja", text), confirm=confirm)
         try:
             if kind == "install":
                 engine.install()
@@ -495,6 +528,25 @@ class MainWindow(QWidget):
             bridge.failed.emit("Błąd pliku", f"{error}\n\nUpewnij się, że gra jest wyłączona.")
         finally:
             bridge.finished.emit()
+
+    def ask_use_anyway(self, names: list) -> bool:
+        dialog = MessageDialog(
+            self, "Nowsza wersja gry",
+            "Spolszczenie nie zostało jeszcze zaktualizowane do najnowszej wersji gry "
+            f"(plik: {', '.join(names)}).\n\n"
+            "Możesz użyć spolszczenia mimo to: część tekstów może być niepełna lub zostać w oryginalnym języku, "
+            "reszta będzie po polsku. Oryginał możesz w każdej chwili przywrócić.\n\nUżyć mimo to?",
+            "warn", ok_text="Użyj mimo to", cancel_text="Anuluj")
+        return bool(dialog.exec())
+
+    def on_ask(self, names, box) -> None:
+        answer = False
+        try:
+            if not self.closing:
+                answer = self.ask_use_anyway(names)
+        finally:
+            box["answer"] = answer
+            box["event"].set()
 
     def on_progress(self, value: float, text: str) -> None:
         self.track.set_value(value)

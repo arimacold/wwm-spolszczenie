@@ -35,14 +35,20 @@ def _mb(size: int) -> str:
     return f"{size / (1024 * 1024):.1f} MB"
 
 
+class ForeignVersionError(OperationError):
+    """Gra pobrała plik różnicowy innej wersji niż oryginał z manifestu (np. po aktualizacji gry)."""
+
+
 class Engine:
     WATCH_TIMEOUT = 300      # s – tyle czekamy, aż gra utworzy plik różnicowy
     CONFIRM_SECONDS = 8      # s – tyle plik musi pozostać podmieniony
     GERMAN_FALLBACK = 8      # s – plik DE nie pojawił się = tłumaczenie jest już w plikach gry
+    FOREIGN_SECONDS = 3      # s – tyle plik od gry musi stabilnie różnić się od oryginału, by uznać go za inną wersję
 
     def __init__(self, root, language: str, progress: Progress,
                  cancelled: Optional[threading.Event] = None, base_url: str = RAW_URL,
-                 notify: Optional[Callable[[str], None]] = None, session=None):
+                 notify: Optional[Callable[[str], None]] = None, session=None,
+                 confirm: Optional[Callable[[list], bool]] = None):
         self.root = Path(root)
         self.language = language
         self.data = data_path(self.root, language)
@@ -51,6 +57,10 @@ class Engine:
         self.base_url = base_url if base_url.endswith("/") else base_url + "/"
         self.notify = notify or (lambda text: None)
         self.http = session or requests.Session()
+        self.confirm = confirm         # pytanie „użyć mimo nowszej wersji gry?"; bez niego silnik jest restrykcyjny
+        self._decision: Optional[bool] = None
+        self._accepted: set = set()    # sumy obcych (nowszych) plików gry, które użytkownik zaakceptował
+        self._foreign_seen = False
         self.skipped: list = []
 
     # ------------------------------------------------------------------ pomocnicze
@@ -100,6 +110,15 @@ class Engine:
             target.unlink(missing_ok=True)
             raise OperationError(f"Nieprawidłowa suma kontrolna pliku {spec.name}. Spróbuj ponownie.")
 
+    def _allow_mismatch(self, names: list) -> bool:
+        """Pyta (raz na operację), czy użyć tłumaczenia mimo że plik gry jest w nowszej wersji niż tłumaczenie."""
+        if self._decision is None:
+            if self.confirm is None:
+                return False
+            self.progress(0.30, "Czekam na Twoją decyzję…")
+            self._decision = bool(self.confirm(list(names)))
+        return self._decision
+
     def _download_original(self, spec: FileSpec, staging: Path) -> Optional[Path]:
         """Ostatnia deska ratunku przy przywracaniu: oryginał z repozytorium, zweryfikowany sumą."""
         target = staging / ("orig_" + spec.name)
@@ -136,6 +155,7 @@ class Engine:
             staging = Path(directory)
             changes: list = []
             jobs: list = []
+            overrides: dict = {}
             for spec in manifest.packages:
                 self.check_cancelled()
                 target = spec.target(root)
@@ -154,6 +174,13 @@ class Engine:
                             adopt_legacy_backup(data, target, spec.original) is None:
                         problem = (f"Nie znaleziono kopii oryginału pliku {spec.name}. Sprawdź spójność "
                                    "plików gry w Steam lub launcherze, a potem zainstaluj ponownie.")
+                elif current is not None and not spec.optional and self._allow_mismatch([spec.name]):
+                    # gra nowsza niż tłumaczenie, a użytkownik zdecydował: używamy mimo to. Prawdziwy plik gry
+                    # trafia do kopii i staje się „oryginałem" tej instalacji (przywracanie odda właśnie jego).
+                    save_original(data, target, current)
+                    overrides[spec.name] = current
+                elif current is not None and not spec.optional and self.confirm is not None:
+                    raise Cancelled()
                 else:
                     problem = (f"Niezgodna wersja pliku {spec.name} – gra mogła zostać zaktualizowana. "
                                "Sprawdź spójność plików gry albo poczekaj na aktualizację tłumaczenia.")
@@ -183,7 +210,7 @@ class Engine:
                 if (staging / spec.name).exists():
                     atomic_copy(staging / spec.name, payload_path(data, spec))
 
-            applied = manifest.without(self.skipped)
+            applied = manifest.without(self.skipped).with_originals(overrides)
             staged = staging / "manifest.json"
             staged.write_text(json.dumps(applied.dump(), indent=2), encoding="utf-8")
             local = data / "manifest.json"
@@ -267,12 +294,11 @@ class Engine:
                 current = file_hash(target)
                 if current == spec.original:
                     save_original(self.data, target, current)
-                elif current not in (None, spec.sha256):
-                    if spec.optional:
-                        continue
-                    raise OperationError(
-                        f"Niezgodna wersja pliku różnicowego {spec.name}. Gra mogła zostać zaktualizowana – "
-                        "sprawdź spójność plików gry albo poczekaj na aktualizację tłumaczenia.")
+                elif current not in (None, spec.sha256) and spec.optional:
+                    continue
+                # Nieznany plik różnicowy (np. pozostałość po starym instalatorze) nie blokuje startu: i tak jest
+                # usuwany, a gra pobiera go od nowa. O zgodności decyduje dopiero świeżo pobrany plik (_watch);
+                # do tego czasu stan sprzed startu jest zapisany w dzienniku i wraca przy każdej porażce.
                 watched.append(spec)
                 entries.append((target, current, [None, spec.original, spec.sha256]))
                 was_missing[spec.name] = current is None
@@ -291,9 +317,24 @@ class Engine:
                 self.check_cancelled()
                 journal.finish()
             except BaseException:
-                journal.recover()
+                if self._foreign_seen:
+                    journal.finish()   # na dysku jest świeży plik gry (nie nasz) – niczego nie cofamy do starego stanu
+                else:
+                    journal.recover()
                 raise
         return result
+
+    def _decide_foreign(self, spec: FileSpec, digest: str) -> float:
+        """Gra ma nowszy plik niż tłumaczenie: pyta użytkownika; zwraca czas oczekiwania na odpowiedź."""
+        started = time.monotonic()
+        if self.confirm is None:
+            raise ForeignVersionError(
+                f"Gra pobrała inną wersję pliku {spec.name} niż oryginał, na którym oparte jest tłumaczenie. "
+                "Gra mogła zostać zaktualizowana – poczekaj na aktualizację tłumaczenia.")
+        if not self._allow_mismatch([spec.name]):
+            raise Cancelled()
+        self._accepted.add(digest)
+        return time.monotonic() - started
 
     def _watch(self, specs: list, was_missing: dict) -> str:
         self.progress(0.30, "Czekam na plik gry. Jeśli gra nie wystartowała, uruchom ją ręcznie.")
@@ -301,7 +342,8 @@ class Engine:
         start = time.monotonic()
         required = [s for s in specs if not s.optional]
         fallback = self.language == "de" and all(was_missing[s.name] for s in required)
-        state = {s.name: {"sig": None, "stable": None, "checked": None, "patched": None} for s in specs}
+        state = {s.name: {"sig": None, "stable": None, "checked": None, "patched": None, "foreign": None,
+                          "fdigest": None} for s in specs}
         seen_any = False
         while time.monotonic() - start < self.WATCH_TIMEOUT:
             self.cancelled.wait(0.1)
@@ -309,12 +351,16 @@ class Engine:
             now = time.monotonic()
             for spec in specs:
                 st, target = state[spec.name], spec.target(root)
+                if st["foreign"] is not None and not spec.optional and now - st["foreign"] >= self.FOREIGN_SECONDS:
+                    start += self._decide_foreign(spec, st["fdigest"])   # czas decyzji nie liczy się do limitu
+                    st.update(sig=None, checked=None, foreign=None)
+                    continue
                 try:
                     info = target.stat()
                     seen_any = True
                     signature = (info.st_size, info.st_mtime_ns)
                     if signature != st["sig"]:
-                        st.update(sig=signature, stable=now, checked=None, patched=None)
+                        st.update(sig=signature, stable=now, checked=None, patched=None, foreign=None)
                         continue
                     if st["patched"] is not None or st["checked"] == signature or now - st["stable"] < 0.5:
                         continue
@@ -322,7 +368,10 @@ class Engine:
                     digest = sha256_file(target)
                     if digest == spec.sha256:
                         st["patched"] = now
-                    elif digest == spec.original:
+                    elif digest != spec.original and digest not in self._accepted:
+                        st["foreign"], st["fdigest"] = now, digest   # gra pobrała inną wersję niż nasz oryginał
+                        self._foreign_seen = True
+                    else:
                         save_original(self.data, target, digest)
                         self.check_cancelled()
                         if file_hash(target) != digest:
@@ -333,10 +382,8 @@ class Engine:
                         st.update(sig=(info.st_size, info.st_mtime_ns), checked=(info.st_size, info.st_mtime_ns),
                                   patched=now)
                         self.progress(0.80, "Sprawdzam, czy spolszczenie pozostaje aktywne…")
-                except FileNotFoundError:
-                    st.update(sig=None, checked=None, patched=None)
-                except OSError:
-                    st.update(sig=None, checked=None, patched=None)  # plik zajęty przez grę – próbujemy dalej
+                except (FileNotFoundError, OSError):   # brak pliku albo zajęty przez grę – próbujemy dalej
+                    st.update(sig=None, checked=None, patched=None, foreign=None)
             if required and all(state[s.name]["patched"] is not None
                                 and now - state[s.name]["patched"] >= self.CONFIRM_SECONDS for s in required):
                 self.progress(1.0, f"Plik różnicowy podmieniony. W grze wybierz {LANGUAGES[self.language]}.")

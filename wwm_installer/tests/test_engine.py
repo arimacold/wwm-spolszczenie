@@ -16,9 +16,9 @@ from wwmpl.operations import Engine, fetch_server_version
 from conftest import sha
 
 
-def engine(world, server, session, lang="en", cancelled=None, notify=None):
+def engine(world, server, session, lang="en", cancelled=None, notify=None, confirm=None):
     log = []
-    e = Engine(world.game, lang, lambda v, t: log.append((v, t)), cancelled, server, notify, session)
+    e = Engine(world.game, lang, lambda v, t: log.append((v, t)), cancelled, server, notify, session, confirm)
     e.log = log
     return e
 
@@ -239,8 +239,9 @@ def test_second_instance_is_blocked(world, server, session):
 class FakeGame:
     """Udaje grę: po starcie zapisuje oryginalny plik różnicowy (jak po pobraniu z serwera)."""
 
-    def __init__(self, world, lang, delay=0.3, revert_once=False, write=True):
+    def __init__(self, world, lang, delay=0.3, revert_once=False, write=True, content=None):
         self.world, self.lang, self.delay, self.revert_once, self.write = world, lang, delay, revert_once, write
+        self.content = content
         self.started = []
 
     def __call__(self, game_path, platform, notify):
@@ -252,7 +253,7 @@ class FakeGame:
         time.sleep(self.delay)
         target = self.world.diff(self.lang)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(self.world.original(self.lang, "diff"))
+        target.write_bytes(self.content or self.world.original(self.lang, "diff"))
         if self.revert_once:
             time.sleep(0.8)
             target.write_bytes(self.world.original(self.lang, "diff"))   # gra cofa nasz plik
@@ -302,13 +303,31 @@ def test_injector_timeout_rolls_back(world, server, session, monkeypatch, fast_w
     assert not Journal(world.game).pending.exists()
 
 
-def test_injector_refuses_unknown_diff_version(world, server, session, monkeypatch, fast_watch):
+def test_injector_accepts_leftover_diff_when_game_redownloads_original(world, server, session, monkeypatch, fast_watch):
+    """Pozostałość po starym instalatorze (nieznany hash) nie blokuje startu – liczy się świeżo pobrany plik."""
     installed(world, server, session)
     world.diff("en").parent.mkdir(parents=True, exist_ok=True)
-    world.diff("en").write_bytes(b"nowa wersja pliku z serwera gry")
+    world.diff("en").write_bytes(b"stare polskie tlumaczenie ze starego instalatora")
     monkeypatch.setattr(operations, "start_game", FakeGame(world, "en"))
-    with pytest.raises(OperationError, match="Niezgodna wersja"):
+    assert engine(world, server, session).launch(str(world.game), "steam") == "patched"
+    assert world.diff("en").read_bytes() == world.translated("en", "diff")
+
+
+def test_injector_fails_fast_and_rolls_back_when_game_downloads_other_version(world, server, session, monkeypatch,
+                                                                              fast_watch):
+    """Gra zaktualizowana: świeży plik różni się od oryginału z repozytorium – nie nakładamy starego tłumaczenia."""
+    installed(world, server, session)
+    before = b"stan sprzed startu"
+    world.diff("en").parent.mkdir(parents=True, exist_ok=True)
+    world.diff("en").write_bytes(before)
+    monkeypatch.setattr(Engine, "FOREIGN_SECONDS", 1.0)
+    monkeypatch.setattr(operations, "start_game", FakeGame(world, "en", content=b"nowa wersja pliku z serwera gry"))
+    started = time.monotonic()
+    with pytest.raises(OperationError, match="inną wersję"):
         engine(world, server, session).launch(str(world.game), "steam")
+    assert time.monotonic() - started < 6                      # nie czekamy całych 300 s
+    assert world.diff("en").read_bytes() == b"nowa wersja pliku z serwera gry"   # plik gry zostaje nietknięty
+    assert not Journal(world.game).pending.exists()
 
 
 def test_injector_cancel_restores_state(world, server, session, monkeypatch, fast_watch):
@@ -378,3 +397,73 @@ def test_make_manifest_tool(world, tmp_path):
     entry = payload["languages"]["en"]["files"][world.name("en", "main")]
     assert entry == {"sha256": sha(world.translated("en", "main")), "original": sha(world.original("en", "main"))}
     assert world.name("en", "small") not in payload["languages"]["en"]["files"]
+
+
+# ------------------------------------------- gra nowsza niż tłumaczenie: ostrzeżenie i wybór użytkownika
+
+def test_install_newer_game_file_when_user_accepts(world, server, session):
+    world.publish()
+    world.install_game_files("en")
+    newer = b"plik gry po aktualizacji"
+    world.pkg("en").write_bytes(newer)
+    asked = []
+    engine(world, server, session, confirm=lambda names: asked.append(names) or True).install()
+    assert asked == [[world.name("en", "main")]]                       # pytamy raz, ze wskazaniem pliku
+    assert world.pkg("en").read_bytes() == world.translated("en", "main")
+    manifest = load_local_manifest(data_path(world.game, "en"), "en")
+    assert manifest.files[world.name("en", "main")].original == sha(newer)
+    assert compute_status(world.game, "en", "1.0.0").state == "current"
+    # przywracanie oddaje prawdziwy (nowszy) plik gry, a nie stary oryginał z repozytorium
+    assert engine(world, server, session).restore() == []
+    assert world.pkg("en").read_bytes() == newer
+
+
+def test_install_newer_game_file_when_user_declines(world, server, session):
+    world.publish()
+    world.install_game_files("en")
+    newer = b"plik gry po aktualizacji"
+    world.pkg("en").write_bytes(newer)
+    with pytest.raises(Cancelled):
+        engine(world, server, session, confirm=lambda names: False).install()
+    assert world.pkg("en").read_bytes() == newer
+    assert load_local_manifest(data_path(world.game, "en"), "en") is None
+
+
+def test_launch_newer_diff_when_user_accepts(world, server, session, monkeypatch, fast_watch):
+    installed(world, server, session)
+    newer = b"nowa wersja pliku z serwera gry"
+    monkeypatch.setattr(Engine, "FOREIGN_SECONDS", 1.0)
+    monkeypatch.setattr(operations, "start_game", FakeGame(world, "en", content=newer))
+    asked = []
+    result = engine(world, server, session, confirm=lambda names: asked.append(names) or True).launch(
+        str(world.game), "steam")
+    assert result == "patched" and len(asked) == 1
+    assert world.diff("en").read_bytes() == world.translated("en", "diff")
+    assert not Journal(world.game).pending.exists()
+    # przywracanie nie wkłada starego oryginału: plik znika i gra pobierze własną, aktualną wersję
+    assert engine(world, server, session).restore() == []
+    assert not world.diff("en").exists()
+
+
+def test_launch_newer_diff_when_user_declines(world, server, session, monkeypatch, fast_watch):
+    installed(world, server, session)
+    newer = b"nowa wersja pliku z serwera gry"
+    monkeypatch.setattr(Engine, "FOREIGN_SECONDS", 1.0)
+    monkeypatch.setattr(operations, "start_game", FakeGame(world, "en", content=newer))
+    with pytest.raises(Cancelled):
+        engine(world, server, session, confirm=lambda names: False).launch(str(world.game), "steam")
+    assert world.diff("en").read_bytes() == newer                    # świeży plik gry zostaje nietknięty
+    assert not Journal(world.game).pending.exists()
+
+
+def test_waiting_for_the_decision_does_not_count_to_timeout(world, server, session, monkeypatch, fast_watch):
+    installed(world, server, session)
+    monkeypatch.setattr(Engine, "FOREIGN_SECONDS", 0.5)
+    monkeypatch.setattr(Engine, "WATCH_TIMEOUT", 3)                  # krótszy niż „namysł" użytkownika
+
+    def slow_yes(names):
+        time.sleep(4)
+        return True
+
+    monkeypatch.setattr(operations, "start_game", FakeGame(world, "en", content=b"nowa wersja z serwera"))
+    assert engine(world, server, session, confirm=slow_yes).launch(str(world.game), "steam") == "patched"

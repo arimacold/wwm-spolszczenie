@@ -512,7 +512,7 @@ class MessageDialog(QDialog):
     """Okno komunikatu w stylu aplikacji (bez systemowej ramki)."""
 
     def __init__(self, parent, title: str, text: str, kind: str = "info",
-                 extra: Optional[tuple] = None, ok_text: str = "OK"):
+                 extra: Optional[tuple] = None, ok_text: str = "OK", cancel_text: Optional[str] = None):
         super().__init__(parent)
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -531,6 +531,10 @@ class MessageDialog(QDialog):
         body.setWordWrap(True)
         body.setFont(body_font(10.5))
         body.setStyleSheet("color:rgba(255,255,255,215); background:transparent;")
+        head.setWordWrap(True)
+        inner = self.width() - outer.contentsMargins().left() - outer.contentsMargins().right()
+        for label in (head, body):   # zawijany tekst: wysokość liczona dla stałej szerokości, inaczej się obcina
+            label.setMinimumHeight(label.heightForWidth(inner))
         outer.addWidget(head)
         outer.addWidget(body)
         outer.addSpacing(6)
@@ -540,6 +544,10 @@ class MessageDialog(QDialog):
             extra_btn = GlowButton(extra[0], "ghost", height=42)
             extra_btn.clicked.connect(extra[1])
             row.addWidget(extra_btn)
+        if cancel_text:
+            cancel = GlowButton(cancel_text, "ghost", height=42)
+            cancel.clicked.connect(self.reject)
+            row.addWidget(cancel)
         ok = GlowButton(ok_text, "primary", height=42)
         ok.clicked.connect(self.accept)
         row.addWidget(ok)
@@ -565,7 +573,8 @@ class MessageDialog(QDialog):
         g.setColorAt(0, QColor(22, 30, 60, 250))
         g.setColorAt(1, QColor(10, 14, 32, 252))
         p.setBrush(QBrush(g))
-        accent = {"error": QColor("#ff6b78"), "success": QColor("#ffd36b")}.get(self.kind, Theme.color("accent2"))
+        accent = {"error": QColor("#ff6b78"), "success": QColor("#ffd36b"),
+                                                            "warn": QColor("#ffc94d")}.get(self.kind, Theme.color("accent2"))
         p.setPen(QPen(with_alpha(accent, 0.55), 1.4))
         p.drawRoundedRect(r, 18, 18)
         p.setPen(QPen(accent, 3, Qt.SolidLine, Qt.RoundCap))

@@ -37,6 +37,7 @@ def window(qapp, world, server, monkeypatch, tmp_path):
     world.install_game_files("de")
     monkeypatch.setattr(appmod, "find_game_path", lambda platform: str(world.game))
     monkeypatch.setattr(appmod.MainWindow, "show_message", lambda self, *a, **k: None)  # bez blokujących dialogów
+    monkeypatch.setattr(appmod.MainWindow, "ask_use_anyway", lambda self, names: False)
     w = appmod.MainWindow(base_url=server)
     w.show()
     assert pump(lambda: w.status is not None)
@@ -91,11 +92,47 @@ def test_closing_during_work_cancels_and_restores(window, world, monkeypatch):
 
 
 def test_error_path_keeps_window_usable(window, world):
-    world.pkg("en").write_bytes(b"gra po aktualizacji")
+    world.publish(tamper=world.name("en", "main"))       # uszkodzony plik na serwerze = prawdziwy błąd
     window.run_install()
     assert pump(lambda: not window.busy and window.detail.text() == "Operacja nie powiodła się.")
     assert window.btn_install.isEnabled()
     assert window.scene.hero.mode == "patrol"
+
+
+def test_newer_game_asks_and_declining_cancels(window, world, monkeypatch):
+    asked = []
+    monkeypatch.setattr(appmod.MainWindow, "ask_use_anyway", lambda self, names: asked.append(names) or False)
+    world.pkg("en").write_bytes(b"gra po aktualizacji")
+    window.run_install()
+    assert pump(lambda: not window.busy and window.detail.text() == "Anulowano operację.")
+    assert asked == [[world.name("en", "main")]]
+    assert world.pkg("en").read_bytes() == b"gra po aktualizacji"
+    assert window.btn_install.isEnabled()
+
+
+def test_newer_game_asks_and_accepting_installs(window, world, monkeypatch):
+    monkeypatch.setattr(appmod.MainWindow, "ask_use_anyway", lambda self, names: True)
+    world.pkg("en").write_bytes(b"gra po aktualizacji")
+    window.run_install()
+    assert pump(lambda: not window.busy and window.detail.text().startswith("Zainstalowano"))
+    assert world.pkg("en").read_bytes() == world.translated("en", "main")
+
+
+def test_german_pack_notice(window, world, monkeypatch):
+    shown = []
+    monkeypatch.setattr(appmod.MainWindow, "show_message", lambda self, title, *a, **k: shown.append(title))
+    world.diff("de").unlink(missing_ok=True)                 # gra nie pobrała jeszcze pakietu niemieckiego
+    window.on_language("de")
+    assert "Najpierw uruchom grę" in window.hint.text()
+    assert pump(lambda: shown == ["Najpierw pobierz pakiet niemiecki"], 2)
+    window.on_language("en")
+    assert "Po instalacji" in window.hint.text()
+    world.diff("de").parent.mkdir(parents=True, exist_ok=True)
+    world.diff("de").write_bytes(world.original("de", "diff"))   # pakiet pobrany – bez komunikatu
+    shown.clear()
+    window.on_language("de")
+    pump(lambda: False, 0.5)
+    assert shown == [] and "Po instalacji" in window.hint.text()
 
 
 def _inside(window):

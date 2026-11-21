@@ -10,7 +10,7 @@ import shutil
 import stat
 import tempfile
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
@@ -172,6 +172,11 @@ class Manifest:
     def without(self, names: Iterable[str]) -> "Manifest":
         skip = set(names)
         return Manifest(self.version, self.language, {n: s for n, s in self.files.items() if n not in skip})
+
+    def with_originals(self, mapping: dict) -> "Manifest":
+        """Kopia manifestu, w której wskazane pliki mają inną sumę „oryginału" (wersja gry nowsza niż tłumaczenie)."""
+        files = {n: (replace(s, original=mapping[n]) if n in mapping else s) for n, s in self.files.items()}
+        return Manifest(self.version, self.language, files)
 
     @property
     def packages(self):
