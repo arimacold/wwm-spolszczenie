@@ -1,5 +1,5 @@
 {
-  "version": "0.0.17a",
+  "version": "0.0.17b",
   "languages": {
     "en": {
       "files": {
@@ -9,7 +9,7 @@
         },
         "translate_words_map_en_diff": {
           "sha256": "7c42d37f7213d9c5acaba1a6b124315c04c9c22516f76fb27be99b8060ed53d7",
-          "original": "d39d74f85c7e6f1616890d36e37c8d52aad7c9578f4b73331edafd7cd96a75c0"
+          "original": "b25ce2a3e256368bc88119a21e3a251199b00e5152dbbf7b14312099e1fa6d45"
         }
       }
     },
@@ -21,7 +21,7 @@
         },
         "translate_words_map_de_diff": {
           "sha256": "7c42d37f7213d9c5acaba1a6b124315c04c9c22516f76fb27be99b8060ed53d7",
-          "original": "57c5325b62223bd43f6fde89be861bf02561373cf51b0b477eb670347ff6b187"
+          "original": "2cae7d76ebb3f3aeae89a441891e4914f5cfba4d529ad32d4b8834dbb5a5f11e"
         }
       }
     }
