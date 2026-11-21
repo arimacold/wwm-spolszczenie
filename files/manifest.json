@@ -1,0 +1,29 @@
+{
+  "version": "0.0.17a",
+  "languages": {
+    "en": {
+      "files": {
+        "translate_words_map_en": {
+          "sha256": "0a4a3bfe3266afc8090aac19746972e65c3c9c0e2299c07c52f55954c8684c1b",
+          "original": "9a2bb446dc2dcc1e2bb4b1bb3207e2990ef7533341a9035ef376c545c3bbdbef"
+        },
+        "translate_words_map_en_diff": {
+          "sha256": "7c42d37f7213d9c5acaba1a6b124315c04c9c22516f76fb27be99b8060ed53d7",
+          "original": "d39d74f85c7e6f1616890d36e37c8d52aad7c9578f4b73331edafd7cd96a75c0"
+        }
+      }
+    },
+    "de": {
+      "files": {
+        "translate_words_map_de": {
+          "sha256": "0a4a3bfe3266afc8090aac19746972e65c3c9c0e2299c07c52f55954c8684c1b",
+          "original": "c87f57b5f986a686b3d4ea907ac1076b17038f4c8e9b0c832263fbdd298af07a"
+        },
+        "translate_words_map_de_diff": {
+          "sha256": "7c42d37f7213d9c5acaba1a6b124315c04c9c22516f76fb27be99b8060ed53d7",
+          "original": "57c5325b62223bd43f6fde89be861bf02561373cf51b0b477eb670347ff6b187"
+        }
+      }
+    }
+  }
+}
