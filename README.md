@@ -4,14 +4,7 @@ Przebudowany instalator: ta sama logika wersji co wcześniej (`version.txt` w re
 w grze), ale z zabezpieczeniami, kopiami zapasowymi i całkowicie nowym interfejsem (PySide6).
 
 
-```
 
-Pliki `__small` nie są wymagane. Jeśli kiedyś wrócą do gry, dodaj je (wraz z oryginałami) do `files/<jezyk>/`
-i `files/orginal/` – generator ujmie je w manifeście automatycznie.
-
-### Wydanie nowej wersji tłumaczenia
-
-```
 python tools/make_manifest.py --version 1.2.0 --files files --originals files/orginal
 ```
 
@@ -23,13 +16,6 @@ Skrypt liczy sumy, waliduje manifest tym samym kodem co instalator i zapisuje `f
 Po aktualizacji gry hash oryginału się zmienia: wygeneruj manifest ponownie z nowymi oryginałami.
 Do tego czasu instalator odmówi pracy na „nieznanej wersji" zamiast psuć pliki.
 
-## Uruchamianie i testy
-
-```
-pip install -r requirements.txt
-python main.py                      # tylko Windows (rejestr, blokada plików)
-pip install pytest && python -m pytest tests -q     # 32 testy, działają też na Linuksie
-```
 
 
 ## Uwagi
