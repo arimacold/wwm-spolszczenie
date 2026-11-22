@@ -35,6 +35,14 @@ def find_original(originals: Path, language: str, name: str):
     return None
 
 
+MAGIC = bytes.fromhex("efbeadde")   # każdy plik translate_words_map_* gry zaczyna się od tych 4 bajtów
+
+
+def has_game_header(path: Path) -> bool:
+    with path.open("rb") as stream:
+        return stream.read(4) == MAGIC
+
+
 def split_file(path: Path, size: int) -> list:
     parts = []
     with path.open("rb") as stream:
@@ -70,6 +78,10 @@ def main() -> int:
                     print(f"BŁĄD: brak pliku {translated}", file=sys.stderr)
                     return 1
                 continue
+            if not has_game_header(translated):
+                print(f"BŁĄD: {translated} nie jest prawidłowym plikiem gry (brak nagłówka EF BE AD DE). "
+                      "Plik jest uszkodzony albo zapisany w złym formacie – wygeneruj go ponownie.", file=sys.stderr)
+                return 1
             original = find_original(args.originals, language, name)
             if original is None:
                 if required:
@@ -77,6 +89,10 @@ def main() -> int:
                     return 1
                 print(f"Pominięto opcjonalny {name}: brak oryginału do porównania")
                 continue
+            if not has_game_header(original):
+                print(f"BŁĄD: oryginał {original} nie jest prawidłowym plikiem gry (brak nagłówka EF BE AD DE).",
+                      file=sys.stderr)
+                return 1
             entry = {"sha256": sha256_file(translated), "original": sha256_file(original)}
             if args.split_mb and translated.stat().st_size > args.split_mb * 1024 * 1024:
                 entry["parts"] = split_file(translated, args.split_mb * 1024 * 1024)

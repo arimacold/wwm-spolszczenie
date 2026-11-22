@@ -60,6 +60,25 @@ class World:
             payload["languages"][lang] = {"files": entries}
         (self.repo / "files" / "manifest.json").write_text(json.dumps(payload))
 
+    def publish_story(self, version="0.1.0-beta"):
+        """Wariant fabularny w podfolderze fabula/ (oryginały tylko w katalogu głównym repo)."""
+        root = self.repo / "fabula"
+        (root / "files").mkdir(parents=True, exist_ok=True)
+        (root / "version.txt").write_text(version)
+        payload = {"version": version, "languages": {}}
+        self.story = {}
+        for lang in ("en", "de"):
+            (root / "files" / lang).mkdir(exist_ok=True)
+            entries = {}
+            for key in ("main", "diff"):
+                name = self.name(lang, key)
+                tr = f"FABULA-{name}".encode() * 50
+                self.story[(lang, key)] = tr
+                (root / "files" / lang / name).write_bytes(tr)
+                entries[name] = {"sha256": sha(tr), "original": sha(self.original(lang, key))}
+            payload["languages"][lang] = {"files": entries}
+        (root / "files" / "manifest.json").write_text(json.dumps(payload))
+
     def install_game_files(self, lang="en", small=False):
         for key in ("main",) + (("small",) if small else ()):
             (self.game / PACKAGE_DIR / self.name(lang, key)).write_bytes(self.original(lang, key))

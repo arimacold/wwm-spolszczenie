@@ -18,16 +18,16 @@ from PySide6.QtWidgets import (QApplication, QBoxLayout, QFileDialog, QFrame, QG
                                QVBoxLayout, QWidget)
 
 from . import core, settings
-from .core import (AUTHORS, COFFEE_URL, LANGUAGES, RAW_URL, STEAM_GUIDE_URL, Cancelled, Journal, OperationError, Status,
+from .core import (AUTHORS, COFFEE_URL, DEFAULT_VARIANT, LANGUAGES, RAW_URL, VARIANTS, variant_url, STEAM_GUIDE_URL, Cancelled, Journal, OperationError, Status,
                    compute_status, find_game_path, game_lock, is_valid_game_path)
 from .operations import Engine, fetch_server_version
 from .scene import FxOverlay, SceneWidget, make_cursor, make_icon
-from .widgets import (TITLE_FAMILIES, AuthorsFlyout, GlassCard, GlowButton, IconTile, MessageDialog, PathPill, ProgressTrack, Segmented,
+from .widgets import (TITLE_FAMILIES, AuthorsFlyout, GlassCard, GlowButton, IconTile, MessageDialog, PathPill, VariantPicker, ProgressTrack, Segmented,
                       ShadowLabel, StatusBadge, TitleBar, Theme, body_font)
 
-APP_VERSION = "2.0.1"
+APP_VERSION = "2.1.0"
 MOOD_FOR_LANGUAGE = {"en": "day", "de": "night"}
-STATUS_COLORS = {"current": "#3ddc84", "outdated": "#ffc94d", "incomplete": "#ffc94d", "legacy": "#ffc94d",
+STATUS_COLORS = {"other_variant": "#ffc94d", "current": "#3ddc84", "outdated": "#ffc94d", "incomplete": "#ffc94d", "legacy": "#ffc94d",
                  "unknown": "#ffc94d", "none": "#ff7a7a", "no_game": "#ff5d5d", "error": "#ff7a7a"}
 SIZES = {"wide": (880, 720), "tall": (600, 830)}
 SCREEN_MARGIN = 40   # tyle wolnego miejsca musi zostać na ekranie (pasek zadań, ramki)
@@ -57,11 +57,19 @@ class MainWindow(QWidget):
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window | Qt.WindowMinimizeButtonHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setWindowTitle("Where Winds Meet – Instalator")
+        app = QApplication.instance()
+        if app is not None and "QToolTip" not in app.styleSheet():
+            # dymki w stylu instalatora zamiast systemowych (jasnych)
+            app.setStyleSheet(app.styleSheet() + """
+                QToolTip { color: #ffffff; background-color: #141b36; border: 1px solid #ffc94d;
+                           border-radius: 8px; padding: 7px 9px; font-size: 9.5pt; }""")
         self.layout_mode = self.initial_layout()
         self.win_w, self.win_h = SIZES[self.layout_mode]
         self.setFixedSize(self.win_w, self.win_h)
         self.base_url = base_url
         self.platform, self.language = "steam", "en"
+        saved_variant = settings.load().get("variant")
+        self.variant = saved_variant if saved_variant in VARIANTS else DEFAULT_VARIANT
         self.game_path: Optional[str] = None
         self.status: Optional[Status] = None
         self.busy = self.closing = False
@@ -151,6 +159,17 @@ class MainWindow(QWidget):
         self.seg_language.changed.connect(self.on_language)
         self.lbl_platform = small_label("PLATFORMA", True, 150, 8.5)
         self.lbl_language = small_label("JĘZYK GRY DO ZASTĄPIENIA", True, 150, 8.5)
+        self.lbl_variant = small_label("WARIANT TŁUMACZENIA", True, 150, 8.5)
+        self.variant_picker = VariantPicker([
+            ("full", "Pełne", "Wszystko po polsku", "book", None),
+            ("story", "Fabularne", "Fabuła po polsku, przedmioty EN", "scroll", "BETA"),
+        ], self.variant, card)
+        self.variant_picker.tips["story"] = (
+            "Wersja w budowie – jeszcze niedopracowana.\n"
+            "Wiele tekstów, które powinny być po polsku, jest wciąż po angielsku.\n"
+            "Nazwy przedmiotów i menu celowo zostają po angielsku.")
+        self.variant_picker.tips["full"] = "Pełne tłumaczenie: dialogi, opisy, przedmioty i menu po polsku."
+        self.variant_picker.changed.connect(self.on_variant)
         self.hint = small_label("", False, 190, 9.5)
         self.hint.setStyleSheet("color: rgba(255,255,255,190); background: transparent;")
         path_row = QHBoxLayout()
@@ -265,15 +284,19 @@ class MainWindow(QWidget):
             grid.addWidget(self.seg_platform, 1, 0)
             grid.addWidget(self.seg_language, 1, 1)
             grid.setColumnStretch(0, 0)
-        grid.addWidget(self.hint, 2, 0, 1, 2)
-        grid.addLayout(self.path_row, 3, 0, 1, 2)
-        grid.addWidget(self.card_line, 4, 0, 1, 2)
-        grid.addWidget(self.badge, 5, 0, 1, 2)
+        grid.addWidget(self.lbl_variant, 2, 0, 1, 2)
+        grid.addWidget(self.variant_picker, 3, 0, 1, 2)
+        grid.addWidget(self.hint, 4, 0, 1, 2)
+        grid.addLayout(self.path_row, 5, 0, 1, 2)
+        grid.addWidget(self.card_line, 6, 0, 1, 2)
+        grid.addWidget(self.badge, 7, 0, 1, 2)
         margin = 32 if tall else 56
         self.body_layout.setContentsMargins(margin, 0, margin, 0)
-        self.body_layout.itemAt(1).spacerItem().changeSize(0, 50 if tall else 64)
+        self.body_layout.itemAt(1).spacerItem().changeSize(0, 50 if tall else 34)
+        self.lbl_variant.setVisible(tall)          # w poziomym brakuje wysokości; kafelki opisują się same
+        grid.setVerticalSpacing(7 if tall else 6)
         self.body_layout.invalidate()
-        self.root_layout.itemAt(1).spacerItem().changeSize(0, 20 if tall else 30)
+        self.root_layout.itemAt(1).spacerItem().changeSize(0, 20 if tall else 22)
         if tall:
             self.btn_box.setDirection(QBoxLayout.TopToBottom)
             self.btn_box.setSpacing(8)
@@ -368,6 +391,8 @@ class MainWindow(QWidget):
     def update_hint(self) -> None:
         if self.german_pack_missing():
             self.hint.setText("Najpierw uruchom grę i wybierz Deutsch, by pobrać pakiet językowy.")
+        elif self.variant == "story":
+            self.hint.setText(f"Wersja w budowie. Po instalacji wybierz w grze język: {LANGUAGES[self.language]}.")
         else:
             self.hint.setText(f"Po instalacji wybierz w ustawieniach gry język: {LANGUAGES[self.language]}.")
 
@@ -389,7 +414,8 @@ class MainWindow(QWidget):
     def refresh_status(self) -> None:
         self.update_hint()
         self.generation += 1
-        generation, path, language, base = self.generation, self.game_path, self.language, self.base_url
+        generation, path, language, variant = self.generation, self.game_path, self.language, self.variant
+        base = variant_url(self.base_url, variant)
         self.badge.set_status("Sprawdzanie…", "#9aa4c0", "", True)
         self.apply_enabled()
 
@@ -402,7 +428,7 @@ class MainWindow(QWidget):
                     if journal.pending.exists():
                         with game_lock(root):
                             journal.recover()
-                status = compute_status(Path(path) if path else None, language, server)
+                status = compute_status(Path(path) if path else None, language, server, variant)
             except (OSError, OperationError) as error:
                 status = Status("error", "SPRAWDŹ STAN INSTALACJI", None, server)
                 status.sub = str(error)
@@ -419,7 +445,7 @@ class MainWindow(QWidget):
             sub = ("Wskaż folder gry." if status.state == "no_game" else
                    f"Najnowsza wersja na serwerze: {status.server_version or 'brak połączenia'}")
         self.badge.set_status(status.message, STATUS_COLORS.get(status.state, "#9aa4c0"), sub,
-                              status.state in ("outdated", "incomplete", "legacy"))
+                              status.state in ("outdated", "incomplete", "legacy", "other_variant"))
         self.apply_enabled()
 
     def apply_enabled(self) -> None:
@@ -427,11 +453,12 @@ class MainWindow(QWidget):
         state = self.status.state if self.status else None
         self.seg_platform.setEnabled(free)
         self.seg_language.setEnabled(free)
+        self.variant_picker.setEnabled(free)
         self.btn_browse.setEnabled(free)
         self.btn_open.setEnabled(free and bool(self.game_path))
         self.btn_install.setEnabled(free and bool(self.game_path))
-        self.btn_launch.setEnabled(free and state in ("current", "outdated", "unknown"))
-        self.btn_restore.setEnabled(free and state in ("current", "outdated", "unknown", "incomplete"))
+        self.btn_launch.setEnabled(free and state in ("current", "outdated", "unknown", "other_variant"))
+        self.btn_restore.setEnabled(free and state in ("current", "outdated", "unknown", "incomplete", "other_variant"))
 
     # ---------------------------------------------------------------- akcje użytkownika
     def on_platform(self, value: str) -> None:
@@ -445,6 +472,25 @@ class MainWindow(QWidget):
         self.refresh_status()
         if value == "de" and self.german_pack_missing():
             QTimer.singleShot(250, self.show_german_notice)
+
+    def confirm_story_variant(self) -> bool:
+        dialog = MessageDialog(
+            self, "Wariant fabularny (BETA)",
+            "Ten wariant jest jeszcze w budowie i nie jest dopracowany.\n\n"
+            "Przetłumaczone są głównie dialogi i opisy fabularne, ale wiele tekstów, które powinny być po polsku, "
+            "wciąż jest po angielsku. Nazwy przedmiotów i elementy menu celowo pozostają po angielsku.\n\n"
+            "Jeśli chcesz kompletnego tłumaczenia, wybierz wariant Pełne.",
+            "warn", ok_text="Rozumiem, wybieram", cancel_text="Wróć do Pełnego")
+        return bool(dialog.exec())
+
+    def on_variant(self, value: str) -> None:
+        if value == "story" and not self.closing and not self.confirm_story_variant():
+            self.variant_picker.set_value("full", emit=False)
+            return
+        self.variant = value
+        settings.save(variant=value)
+        self.update_hint()
+        self.refresh_status()
 
     def browse_path(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Wskaż główny folder gry Where Winds Meet (ten z folderem Package)")
@@ -491,10 +537,10 @@ class MainWindow(QWidget):
         self.track.shown = 0.0
         self.track.set_value(0.0)
         self.scene.hero.set_mode("bar")
-        threading.Thread(target=self._worker, args=(kind, self.game_path, self.platform, self.language),
+        threading.Thread(target=self._worker, args=(kind, self.game_path, self.platform, self.language, self.variant),
                          daemon=True).start()
 
-    def _worker(self, kind: str, path: str, platform: str, language: str) -> None:
+    def _worker(self, kind: str, path: str, platform: str, language: str, variant: str = DEFAULT_VARIANT) -> None:
         bridge = self.bridge
         def confirm(names: list) -> bool:
             """Wątek roboczy czeka na odpowiedź użytkownika (z możliwością przerwania)."""
@@ -506,7 +552,7 @@ class MainWindow(QWidget):
             return bool(box["answer"])
 
         engine = Engine(path, language, bridge.progress.emit, self.cancelled, self.base_url,
-                        notify=lambda text: bridge.info.emit("Informacja", text), confirm=confirm)
+                        notify=lambda text: bridge.info.emit("Informacja", text), confirm=confirm, variant=variant)
         try:
             if kind == "install":
                 engine.install()

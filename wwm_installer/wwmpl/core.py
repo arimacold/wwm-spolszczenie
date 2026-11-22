@@ -40,6 +40,14 @@ PACKAGE_DIR = Path("Package", "HD", "oversea", "locale")
 DIFF_DIR = Path("LocalData", "Patch", "HD", "oversea", "locale")
 DATA_DIR = Path("Spolszczenie_Data", "WWMPL")
 VERSION_FILE = "polish_version.txt"
+# Warianty tłumaczenia: klucz -> (nazwa, podfolder w repozytorium). Pełne leży w katalogu głównym repo.
+VARIANTS = {"full": ("Pełne", ""), "story": ("Fabularne", "fabula/")}
+DEFAULT_VARIANT = "full"
+
+
+def variant_url(base_url: str, variant: str) -> str:
+    base = base_url if base_url.endswith("/") else base_url + "/"
+    return base + VARIANTS.get(variant, VARIANTS[DEFAULT_VARIANT])[1]
 LANGUAGES = {"en": "English", "de": "Deutsch"}
 
 HEX = re.compile(r"[0-9a-f]{64}")
@@ -140,6 +148,7 @@ class Manifest:
     version: str
     language: str
     files: dict  # name -> FileSpec
+    variant: str = DEFAULT_VARIANT
 
     @classmethod
     def parse(cls, payload, language: str) -> "Manifest":
@@ -163,20 +172,22 @@ class Manifest:
             if not isinstance(parts, list) or not all(isinstance(p, str) and PART_NAME.fullmatch(p) for p in parts):
                 raise OperationError(f"Nieprawidłowa lista części pliku {name}.")
             files[name] = FileSpec(name, sha, original, tuple(parts))
-        return cls(version.strip(), language, files)
+        variant = payload.get("variant") if isinstance(payload, dict) else None
+        return cls(version.strip(), language, files, variant if variant in VARIANTS else DEFAULT_VARIANT)
 
     def dump(self) -> dict:
-        return {"version": self.version,
+        return {"version": self.version, "variant": self.variant,
                 "languages": {self.language: {"files": {n: s.to_json() for n, s in self.files.items()}}}}
 
     def without(self, names: Iterable[str]) -> "Manifest":
         skip = set(names)
-        return Manifest(self.version, self.language, {n: s for n, s in self.files.items() if n not in skip})
+        return Manifest(self.version, self.language, {n: s for n, s in self.files.items() if n not in skip},
+                        self.variant)
 
     def with_originals(self, mapping: dict) -> "Manifest":
         """Kopia manifestu, w której wskazane pliki mają inną sumę „oryginału" (wersja gry nowsza niż tłumaczenie)."""
         files = {n: (replace(s, original=mapping[n]) if n in mapping else s) for n, s in self.files.items()}
-        return Manifest(self.version, self.language, files)
+        return Manifest(self.version, self.language, files, self.variant)
 
     @property
     def packages(self):
@@ -416,7 +427,8 @@ def has_installed_files(root: Path, data: Path, manifest: Manifest) -> bool:
     return all(matches(payload_path(data, spec), spec.sha256) for spec in manifest.diffs)
 
 
-def compute_status(root: Optional[Path], language: str, server_version: Optional[str]) -> Status:
+def compute_status(root: Optional[Path], language: str, server_version: Optional[str],
+                   variant: str = DEFAULT_VARIANT) -> Status:
     if root is None:
         return Status("no_game", "NIE ODNALEZIONO GRY!")
     data = data_path(root, language)
@@ -428,6 +440,10 @@ def compute_status(root: Optional[Path], language: str, server_version: Optional
         return Status("none", "BRAK SPOLSZCZENIA", None, server_version)
     if not has_installed_files(root, data, manifest):
         return Status("incomplete", "WYMAGA PONOWNEJ INSTALACJI", manifest.version, server_version)
+    if manifest.variant != variant:
+        name = VARIANTS[manifest.variant][0].upper()
+        return Status("other_variant", f"ZAINSTALOWANO WARIANT {name} ({manifest.version})",
+                      manifest.version, server_version)
     if not server_version:
         return Status("unknown", f"ZAINSTALOWANO ({manifest.version})", manifest.version, None)
     if server_version != manifest.version:

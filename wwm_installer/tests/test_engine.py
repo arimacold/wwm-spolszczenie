@@ -16,9 +16,10 @@ from wwmpl.operations import Engine, fetch_server_version
 from conftest import sha
 
 
-def engine(world, server, session, lang="en", cancelled=None, notify=None, confirm=None):
+def engine(world, server, session, lang="en", cancelled=None, notify=None, confirm=None, variant="full"):
     log = []
-    e = Engine(world.game, lang, lambda v, t: log.append((v, t)), cancelled, server, notify, session, confirm)
+    e = Engine(world.game, lang, lambda v, t: log.append((v, t)), cancelled, server, notify, session, confirm,
+               variant=variant)
     e.log = log
     return e
 
@@ -381,22 +382,28 @@ def test_manifest_rejects_bad_data():
 
 
 def test_make_manifest_tool(world, tmp_path):
+    magic = bytes.fromhex("efbeadde")          # prawdziwe pliki gry mają ten nagłówek
     for lang in ("en", "de"):
         (tmp_path / "files" / lang).mkdir(parents=True, exist_ok=True)
         for key in ("main", "diff"):
             name = world.name(lang, key)
-            (tmp_path / "files" / lang / name).write_bytes(world.translated(lang, key))
+            (tmp_path / "files" / lang / name).write_bytes(magic + world.translated(lang, key))
             (tmp_path / "files" / "orginal").mkdir(exist_ok=True)
-            (tmp_path / "files" / "orginal" / name).write_bytes(world.original(lang, key))
+            (tmp_path / "files" / "orginal" / name).write_bytes(magic + world.original(lang, key))
     tool = Path(__file__).resolve().parents[1] / "tools" / "make_manifest.py"
-    result = subprocess.run([sys.executable, str(tool), "--version", "3.0", "--files", str(tmp_path / "files"),
-                             "--originals", str(tmp_path / "files" / "orginal")],
-                            capture_output=True, text=True)
+    run = lambda: subprocess.run([sys.executable, str(tool), "--version", "3.0", "--files", str(tmp_path / "files"),
+                                  "--originals", str(tmp_path / "files" / "orginal")], capture_output=True, text=True)
+    result = run()
     assert result.returncode == 0, result.stderr
     payload = json.loads((tmp_path / "files" / "manifest.json").read_text())
     entry = payload["languages"]["en"]["files"][world.name("en", "main")]
-    assert entry == {"sha256": sha(world.translated("en", "main")), "original": sha(world.original("en", "main"))}
+    assert entry == {"sha256": sha(magic + world.translated("en", "main")),
+                     "original": sha(magic + world.original("en", "main"))}
     assert world.name("en", "small") not in payload["languages"]["en"]["files"]
+    # plik bez nagłówka gry (uszkodzony / zły format) nie przechodzi
+    (tmp_path / "files" / "en" / world.name("en", "main")).write_bytes(b"\x8c\xd1'F zly plik")
+    result = run()
+    assert result.returncode == 1 and "nagłówka" in result.stderr
 
 
 # ------------------------------------------- gra nowsza niż tłumaczenie: ostrzeżenie i wybór użytkownika
@@ -467,3 +474,45 @@ def test_waiting_for_the_decision_does_not_count_to_timeout(world, server, sessi
 
     monkeypatch.setattr(operations, "start_game", FakeGame(world, "en", content=b"nowa wersja z serwera"))
     assert engine(world, server, session, confirm=slow_yes).launch(str(world.game), "steam") == "patched"
+
+
+# ------------------------------------------------------------------ warianty: pełne / fabularne
+
+def test_switch_full_to_story_and_back(world, server, session):
+    world.publish()
+    world.publish_story()
+    world.install_game_files("en")
+    engine(world, server, session).install()
+    assert world.pkg("en").read_bytes() == world.translated("en", "main")
+    m = engine(world, server, session, variant="story").install()
+    assert m.variant == "story"
+    assert world.pkg("en").read_bytes() == world.story[("en", "main")]
+    assert compute_status(world.game, "en", "0.1.0-beta", "story").state == "current"
+    assert compute_status(world.game, "en", "1.0.0", "full").state == "other_variant"
+    engine(world, server, session).install()
+    assert world.pkg("en").read_bytes() == world.translated("en", "main")
+    assert compute_status(world.game, "en", "1.0.0", "full").state == "current"
+
+
+def test_story_restore_uses_original_from_repo_root(world, server, session):
+    world.publish()
+    world.publish_story()
+    world.install_game_files("en")
+    engine(world, server, session, variant="story").install()
+    import shutil
+    shutil.rmtree(data_path(world.game, "en") / "backup")          # brak lokalnej kopii -> pobranie z repo
+    assert engine(world, server, session, variant="story").restore() == []
+    assert world.pkg("en").read_bytes() == world.original("en", "main")
+
+
+def test_story_not_published_yet(world, server, session):
+    world.publish()
+    world.install_game_files("en")
+    with pytest.raises(OperationError, match="nie jest jeszcze dostępny"):
+        engine(world, server, session, variant="story").install()
+    assert world.pkg("en").read_bytes() == world.original("en", "main")
+
+
+def test_story_version_file(world, server, session):
+    world.publish_story("0.2.0")
+    assert fetch_server_version(server + "fabula/", session) == "0.2.0"

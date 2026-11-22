@@ -38,6 +38,7 @@ def window(qapp, world, server, monkeypatch, tmp_path):
     monkeypatch.setattr(appmod, "find_game_path", lambda platform: str(world.game))
     monkeypatch.setattr(appmod.MainWindow, "show_message", lambda self, *a, **k: None)  # bez blokujących dialogów
     monkeypatch.setattr(appmod.MainWindow, "ask_use_anyway", lambda self, names: False)
+    monkeypatch.setattr(appmod.MainWindow, "confirm_story_variant", lambda self: True)
     w = appmod.MainWindow(base_url=server)
     w.show()
     assert pump(lambda: w.status is not None)
@@ -135,6 +136,22 @@ def test_german_pack_notice(window, world, monkeypatch):
     assert shown == [] and "Po instalacji" in window.hint.text()
 
 
+def _overlaps(window):
+    """Widoczne elementy karty nie mogą na siebie nachodzić (pionowo, w tej samej kolumnie)."""
+    ws = [window.lbl_variant, window.variant_picker, window.hint, window.pill, window.badge]
+    ws = [w for w in ws if w.isVisible()]
+    bad = []
+    for a, b in zip(ws, ws[1:]):
+        ya = a.mapTo(window, a.rect().bottomLeft()).y()
+        yb = b.mapTo(window, b.rect().topLeft()).y()
+        if ya > yb + 1:
+            bad.append((type(a).__name__, type(b).__name__, ya, yb))
+    card = window.badge.parentWidget()
+    if window.badge.mapTo(card, window.badge.rect().bottomLeft()).y() > card.height():
+        bad.append(("badge poza kartą",))
+    return bad
+
+
 def _inside(window):
     """Wszystkie widoczne widgety muszą mieścić się w oknie i nie wystawać poza kartę/okno."""
     outside = []
@@ -155,6 +172,7 @@ def test_layouts_switch_and_everything_fits(window):
     pump(lambda: False, 0.3)
     assert window.layout_mode == "wide" and (window.width(), window.height()) == (880, 720)
     assert not _inside(window), _inside(window)
+    assert not _overlaps(window), _overlaps(window)
     assert window.scene.width() == 880 and window.overlay.width() == 880
     rails = window.scene.hero.rails
     assert 0 < rails["title"][0] < rails["title"][1] < 880 and 0 < rails["bar"][0] < rails["bar"][1] < 880
@@ -165,6 +183,7 @@ def test_layouts_switch_and_everything_fits(window):
     # przyciski ułożone pionowo, pełna szerokość
     assert window.layout_mode == "tall" and window.btn_install.y() < window.btn_launch.y() < window.btn_restore.y()
     assert not _inside(window)
+    assert not _overlaps(window), _overlaps(window)
 
 
 def test_layout_is_restored_on_start(qapp, world, server, monkeypatch, tmp_path):
@@ -232,3 +251,29 @@ def test_hero_acts_and_planting_flag(qapp):
     p.end()
     h.set_mode("patrol")
     assert h.plant_progress() == 0.0               # po zmianie trybu flaga wraca do ręki
+
+
+def test_variant_picker_switches_status_and_is_saved(window, world, monkeypatch):
+    from wwmpl import settings
+    world.publish_story("0.3.0-beta")
+    window.variant_picker.set_value("story")
+    assert pump(lambda: window.status and window.status.server_version == "0.3.0-beta")
+    assert settings.load()["variant"] == "story"
+    assert "Wersja w budowie" in window.hint.text()
+    window.run_install()
+    assert pump(lambda: not window.busy and window.detail.text().startswith("Zainstalowano"))
+    assert world.pkg("en").read_bytes() == world.story[("en", "main")]
+    window.variant_picker.set_value("full")
+    assert pump(lambda: window.status and window.status.state == "other_variant")
+    assert window.btn_launch.isEnabled() and window.btn_install.isEnabled()
+
+
+def test_story_warning_can_send_user_back_to_full(window, monkeypatch):
+    from wwmpl import settings
+    asked = []
+    monkeypatch.setattr(appmod.MainWindow, "confirm_story_variant", lambda self: asked.append(1) or False)
+    window.variant_picker.set_value("story")
+    assert asked == [1]
+    assert window.variant == "full" and window.variant_picker.value == "full"
+    assert settings.load().get("variant") in (None, "full")
+    assert "w budowie" in window.variant_picker.tips["story"]

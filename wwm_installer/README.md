@@ -3,7 +3,20 @@
 Przebudowany instalator: ta sama logika wersji co wcześniej (`version.txt` w repo, `polish_version.txt`
 w grze), ale z zabezpieczeniami, kopiami zapasowymi i całkowicie nowym interfejsem (PySide6).
 
+## Co się zmieniło
 
+| Obszar | Teraz |
+|---|---|
+| Weryfikacja | sumy SHA-256 z `files/manifest.json` (pliki tłumaczenia **i** oryginały gry) |
+| Kopie zapasowe | `Spolszczenie_Data/WWMPL/<en\|de>/backup/<hash>/` – tylko prawdziwe oryginały |
+| Zapis plików | plik tymczasowy + podmiana, dziennik odzyskiwania cofa przerwaną operację |
+| Pliki `small` | **opcjonalne** – nie ma ich w grze, więc są pomijane bez błędu; gdyby wróciły i były w manifeście, zostaną zainstalowane |
+| Injector „w locie" | zostaje (przycisk „URUCHOM GRĘ"), ale podmienia plik dopiero po sprawdzeniu hasha i cofa zmiany po timeoucie |
+| Steam | szuka też w dodatkowych bibliotekach (`libraryfolders.vdf`) |
+| Migracja | stara instalacja (`.backup` + `polish_version.txt`) jest rozpoznawana i bezpiecznie przejmowana |
+| Interfejs | animowane tło dzień / noc / świt, bohater biegający po tytule i pasku postępu, własny kursor |
+
+Nastroje: **English → dzień**, **Deutsch → noc**, **po udanej instalacji → świt** (z animacją).
 
 ## Układ repozytorium `arimacold/wwm-spolszczenie`
 
@@ -17,6 +30,30 @@ files/
   de/translate_words_map_de_diff
   orginal/<te same nazwy>        <- oryginały gry; używane tylko jako ostatnia deska ratunku przy przywracaniu
 ```
+
+### Wariant fabularny (BETA)
+
+Instalator ma wybór **Pełne** / **Fabularne**. Wariant fabularny leży w osobnym folderze z tym samym układem:
+
+```
+fabula/
+  version.txt                    <- osobna wersja wariantu (np. 0.1.0-beta)
+  files/
+    manifest.json
+    en/translate_words_map_en
+    en/translate_words_map_en_diff
+    de/translate_words_map_de
+    de/translate_words_map_de_diff
+```
+
+Oryginały są wspólne (`files/orginal/`) – nie kopiuj ich do `fabula/`. Manifest wariantu:
+
+```
+python tools/make_manifest.py --version 0.1.0-beta --files fabula/files --originals files/orginal
+```
+
+Przełączanie wariantów w instalatorze działa jak aktualizacja (kopie oryginałów są wspólne). Dopóki folderu
+`fabula/` nie ma w repozytorium, wybór wariantu fabularnego kończy się komunikatem „nie jest jeszcze dostępny”.
 
 Pliki `__small` nie są wymagane. Jeśli kiedyś wrócą do gry, dodaj je (wraz z oryginałami) do `files/<jezyk>/`
 i `files/orginal/` – generator ujmie je w manifeście automatycznie.
@@ -72,4 +109,11 @@ podejrzanie. Ikona i dane wersji pochodzą z `assets/` (`python tools/make_icon.
 - Instalator zamknięty w trakcie pracy anuluje operację i cofa zmiany.
 - Zminimalizowane okno wstrzymuje animacje (zero obciążenia procesora).
 
+## Układ okna i bohater
 
+- Domyślnie okno jest **pionowe (600×830)**. Przycisk w pasku tytułu przełącza na **poziome (880×720)** i z powrotem;
+  wybór zapamiętuje `%LOCALAPPDATA%\WWM-Spolszczenie\settings.json`. Na niskim ekranie (wolne miejsce < 870 px)
+  instalator sam wybiera układ poziomy. Przełączanie jest zablokowane w trakcie instalacji.
+- Samuraj nosi biało-czerwoną flagę: macha nią, kręci, kłania się i tnie mieczem podczas postoju na napisie,
+  a po udanej instalacji wbija ją w koniec paska postępu.
+- Podgląd klatek bohatera: `python tests/hero_sheet.py /tmp/hero.png`.

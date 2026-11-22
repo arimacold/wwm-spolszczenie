@@ -13,10 +13,10 @@ from typing import Callable, Optional
 import requests
 
 from .core import (
-    RAW_URL, Cancelled, Change, FileSpec, Journal, LANGUAGES, Manifest, OperationError,
+    DEFAULT_VARIANT, RAW_URL, VARIANTS, Cancelled, Change, FileSpec, Journal, LANGUAGES, Manifest, OperationError,
     adopt_legacy_backup, atomic_copy, data_path, file_hash, game_lock, has_installed_files,
     load_local_manifest, matches, original_backup, payload_path, read_version_file, remove_file,
-    save_original, sha256_file, start_game, sync_version_file,
+    save_original, sha256_file, start_game, sync_version_file, variant_url,
 )
 
 Progress = Callable[[float, str], None]
@@ -48,13 +48,15 @@ class Engine:
     def __init__(self, root, language: str, progress: Progress,
                  cancelled: Optional[threading.Event] = None, base_url: str = RAW_URL,
                  notify: Optional[Callable[[str], None]] = None, session=None,
-                 confirm: Optional[Callable[[list], bool]] = None):
+                 confirm: Optional[Callable[[list], bool]] = None, variant: str = DEFAULT_VARIANT):
         self.root = Path(root)
         self.language = language
         self.data = data_path(self.root, language)
         self.progress = progress
         self.cancelled = cancelled or threading.Event()
-        self.base_url = base_url if base_url.endswith("/") else base_url + "/"
+        self.repo_url = base_url if base_url.endswith("/") else base_url + "/"
+        self.variant = variant if variant in VARIANTS else DEFAULT_VARIANT
+        self.base_url = variant_url(self.repo_url, self.variant)   # pliki i manifest wybranego wariantu
         self.notify = notify or (lambda text: None)
         self.http = session or requests.Session()
         self.confirm = confirm         # pytanie „użyć mimo nowszej wersji gry?"; bez niego silnik jest restrykcyjny
@@ -74,6 +76,12 @@ class Engine:
             response = self.http.get(self.base_url + "files/manifest.json", timeout=15)
             response.raise_for_status()
             payload = response.json()
+        except requests.HTTPError as error:
+            status = getattr(error.response, "status_code", None)
+            if status == 404 and self.variant != DEFAULT_VARIANT:
+                raise OperationError(f"Wariant „{VARIANTS[self.variant][0]}” nie jest jeszcze dostępny na serwerze. "
+                                     "Wybierz wariant Pełne albo spróbuj później.") from error
+            raise OperationError(f"Nie udało się pobrać manifestu tłumaczenia: {error}") from error
         except (requests.RequestException, ValueError) as error:
             raise OperationError(f"Nie udało się pobrać manifestu tłumaczenia: {error}") from error
         return Manifest.parse(payload, self.language)
@@ -123,7 +131,7 @@ class Engine:
         """Ostatnia deska ratunku przy przywracaniu: oryginał z repozytorium, zweryfikowany sumą."""
         target = staging / ("orig_" + spec.name)
         try:
-            with self.http.get(f"{self.base_url}files/orginal/{spec.name}", stream=True, timeout=30) as response:
+            with self.http.get(f"{self.repo_url}files/orginal/{spec.name}", stream=True, timeout=30) as response:
                 response.raise_for_status()
                 with target.open("wb") as stream:
                     for chunk in response.iter_content(chunk_size=256 * 1024):
@@ -211,6 +219,7 @@ class Engine:
                     atomic_copy(staging / spec.name, payload_path(data, spec))
 
             applied = manifest.without(self.skipped).with_originals(overrides)
+            applied.variant = self.variant
             staged = staging / "manifest.json"
             staged.write_text(json.dumps(applied.dump(), indent=2), encoding="utf-8")
             local = data / "manifest.json"

@@ -4,10 +4,10 @@ from __future__ import annotations
 import math
 from typing import Callable, Optional
 
-from PySide6.QtCore import (QEasingCurve, QPointF, QRectF, Qt, QTimer, QVariantAnimation, Signal)
+from PySide6.QtCore import (QEasingCurve, QEvent, QPointF, QRectF, Qt, QTimer, QVariantAnimation, Signal)
 from PySide6.QtGui import (QBrush, QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPen,
                            QPixmap, QPolygonF)
-from PySide6.QtWidgets import QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QToolTip, QVBoxLayout, QWidget
 
 BODY_FONT = "Segoe UI"
 TITLE_FAMILIES = ["Palatino Linotype", "Book Antiqua", "Georgia", "Times New Roman", "serif"]
@@ -384,6 +384,189 @@ class Segmented(QWidget):
             alpha = 255 if i == self.index else (225 if i == self._hover else 165)
             p.setPen(QColor(255, 255, 255, alpha if on else 110))
             p.drawText(r, Qt.AlignCenter, text)
+
+
+class VariantPicker(QWidget):
+    """Wybór wariantu tłumaczenia: kafelki z ikoną, nazwą, opisem i opcjonalną plakietką (np. BETA)."""
+    changed = Signal(str)
+
+    def __init__(self, items: list, value: str, parent=None):
+        # items: [(klucz, nazwa, opis, ikona 'book'|'scroll', plakietka albo None)]
+        super().__init__(parent)
+        self.items = items
+        self.index = [i[0] for i in items].index(value)
+        self._x = float(self.index)
+        self._hover = -1
+        self._t = 0.0
+        self.setMouseTracking(True)
+        self.setFixedHeight(54)
+        self.setMinimumWidth(300)
+        if Theme.hover_cursor is not None:
+            self.setCursor(Theme.hover_cursor)
+        self._anim = QVariantAnimation(self, duration=300)
+        self._anim.setEasingCurve(QEasingCurve.OutBack)
+        self._anim.valueChanged.connect(self._set_x)
+        self._pulse = QTimer(self)
+        self._pulse.timeout.connect(self._tick)
+        self._pulse.start(50)
+        self.tips: dict = {}          # klucz kafelka -> tekst dymka po najechaniu
+
+    def event(self, event):
+        if event.type() == QEvent.ToolTip:
+            i = self._at(event.position() if hasattr(event, "position") else QPointF(event.pos()))
+            tip = self.tips.get(self.items[i][0]) if i >= 0 else None
+            if tip:
+                QToolTip.showText(event.globalPos(), tip, self, self._cell(i).toRect())
+            else:
+                QToolTip.hideText()
+                event.ignore()
+            return True
+        return super().event(event)
+
+    def _tick(self):
+        if self.isVisible():
+            self._t += 0.05
+            self.update()
+
+    def _set_x(self, v):
+        self._x = float(v)
+        self.update()
+
+    @property
+    def value(self) -> str:
+        return self.items[self.index][0]
+
+    def set_value(self, value: str, emit: bool = True) -> None:
+        idx = [i[0] for i in self.items].index(value)
+        if idx == self.index:
+            return
+        self.index = idx
+        self._anim.stop()
+        self._anim.setStartValue(self._x)
+        self._anim.setEndValue(float(idx))
+        self._anim.start()
+        if emit:
+            self.changed.emit(value)
+
+    def _cell(self, i: float) -> QRectF:
+        gap = 8.0
+        w = (self.width() - gap * (len(self.items) - 1)) / len(self.items)
+        return QRectF(i * (w + gap), 0, w, self.height()).adjusted(1, 1, -1, -1)
+
+    def _at(self, pos) -> int:
+        for i in range(len(self.items)):
+            if self._cell(i).contains(pos):
+                return i
+        return -1
+
+    def mouseMoveEvent(self, event):
+        self._hover = self._at(event.position())
+        self.update()
+
+    def leaveEvent(self, event):
+        self._hover = -1
+        self.update()
+
+    def mousePressEvent(self, event):
+        event.accept()
+        i = self._at(event.position())
+        if self.isEnabled() and event.button() == Qt.LeftButton and i >= 0:
+            self.set_value(self.items[i][0])
+
+    def _icon(self, p: QPainter, kind: str, c: QPointF, color: QColor, t: float) -> None:
+        p.save()
+        p.translate(c)
+        pen = QPen(color, 1.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+        if kind == "book":
+            # otwarta księga z pędzelkiem — „wszystko przetłumaczone”
+            p.setPen(pen)
+            p.setBrush(with_alpha(color, 0.18))
+            left, right = QPainterPath(), QPainterPath()
+            left.moveTo(0, -6); left.quadTo(-6, -9, -12, -7); left.lineTo(-12, 8); left.quadTo(-6, 6, 0, 9)
+            left.closeSubpath()
+            right.moveTo(0, -6); right.quadTo(6, -9, 12, -7); right.lineTo(12, 8); right.quadTo(6, 6, 0, 9)
+            right.closeSubpath()
+            p.drawPath(left)
+            p.drawPath(right)
+            p.setPen(QPen(with_alpha(color, 0.65), 1.0))
+            for k in range(3):
+                y = -3 + k * 3.5
+                p.drawLine(QPointF(-9.5, y), QPointF(-3, y + 0.8))
+                p.drawLine(QPointF(3, y + 0.8), QPointF(9.5, y))
+            # pędzelek kołysze się lekko
+            p.rotate(math.sin(t * 2.0) * 6)
+            p.setPen(QPen(QColor("#e9d3a1"), 2.2, Qt.SolidLine, Qt.RoundCap))
+            p.drawLine(QPointF(6, -15), QPointF(13, -6))
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(30, 30, 40))
+            p.drawEllipse(QPointF(13.5, -5.3), 1.9, 1.9)
+        else:
+            # dymek rozmowy ze zwojem — „dialogi i fabuła”
+            p.setPen(pen)
+            p.setBrush(with_alpha(color, 0.18))
+            bubble = QPainterPath()
+            bubble.addRoundedRect(QRectF(-12, -10, 24, 15), 6, 6)
+            tail = QPainterPath()
+            tail.moveTo(-5, 4.5); tail.lineTo(-8, 10); tail.lineTo(0, 4.5)
+            p.drawPath(bubble.united(tail))
+            p.setPen(Qt.NoPen)
+            for k in range(3):   # „pisze…” – kropki unoszą się po kolei
+                lift = max(0.0, math.sin(t * 4.0 - k * 0.9)) * 1.6
+                p.setBrush(with_alpha(color, 0.95))
+                p.drawEllipse(QPointF(-6 + k * 6, -2.5 - lift), 1.6, 1.6)
+        p.restore()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
+        on = self.isEnabled()
+        accent = Theme.color("accent") if on else QColor(96, 104, 128)
+        for i in range(len(self.items)):
+            r = self._cell(i)
+            p.setPen(QPen(QColor(255, 255, 255, 45 if on else 22), 1.0))
+            p.setBrush(QColor(255, 255, 255, 22 if i == self._hover and on else 10) if i != self.index
+                       else QColor(0, 0, 0, 70))
+            p.drawRoundedRect(r, 12, 12)
+        # podświetlenie wybranego kafelka przesuwa się animowanie
+        sel = self._cell(self._x)
+        g = QLinearGradient(0, sel.top(), 0, sel.bottom())
+        g.setColorAt(0, with_alpha(accent.lighter(115), 0.55))
+        g.setColorAt(1, with_alpha(accent.darker(130), 0.40))
+        glow = 0.55 + 0.25 * math.sin(self._t * 2.2)
+        p.setPen(QPen(with_alpha(accent.lighter(140), glow if on else 0.3), 1.4))
+        p.setBrush(QBrush(g))
+        p.drawRoundedRect(sel, 12, 12)
+
+        for i, (key, title, sub, icon, badge) in enumerate(self.items):
+            r = self._cell(i)
+            chosen = i == self.index
+            alpha = 1.0 if chosen else (0.85 if i == self._hover else 0.62)
+            if not on:
+                alpha *= 0.6
+            icon_c = QPointF(r.left() + 26, r.center().y() + 1)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(0, 0, 0, 60))
+            p.drawEllipse(icon_c, 18, 18)
+            self._icon(p, icon, icon_c, with_alpha(QColor("white"), alpha), self._t if chosen else 0.0)
+            text_x = r.left() + 52
+            p.setFont(body_font(10.5, bold=True))
+            p.setPen(with_alpha(QColor("white"), alpha))
+            title_rect = QRectF(text_x, r.top() + 7, r.width() - 58, 20)
+            p.drawText(title_rect, Qt.AlignLeft | Qt.AlignVCenter, title)
+            if badge:
+                tw = QFontMetrics(body_font(10.5, bold=True)).horizontalAdvance(title)
+                p.setFont(body_font(7, bold=True, spacing=1.0))
+                bw = QFontMetrics(p.font()).horizontalAdvance(badge) + 12
+                br = QRectF(text_x + tw + 8, r.top() + 10, bw, 15)
+                p.setPen(Qt.NoPen)
+                p.setBrush(with_alpha(QColor("#ffb347"), 0.9 * (alpha if on else 0.6)))
+                p.drawRoundedRect(br, 7, 7)
+                p.setPen(QColor(40, 24, 0))
+                p.drawText(br, Qt.AlignCenter, badge)
+            p.setFont(body_font(8.5))
+            p.setPen(with_alpha(QColor("white"), alpha * 0.78))
+            p.drawText(QRectF(text_x, r.top() + 27, r.width() - 58, 18), Qt.AlignLeft | Qt.AlignVCenter,
+                       QFontMetrics(p.font()).elidedText(sub, Qt.ElideRight, int(r.width() - 60)))
 
 
 class PathPill(QWidget):
