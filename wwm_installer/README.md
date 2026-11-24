@@ -115,9 +115,17 @@ podejrzanie. Ikona i dane wersji pochodzą z `assets/` (`python tools/make_icon.
 - Domyślnie okno jest **pionowe (600×830)**. Przycisk w pasku tytułu przełącza na **poziome (880×720)** i z powrotem;
   wybór zapamiętuje `%LOCALAPPDATA%\WWM-Spolszczenie\settings.json`. Na niskim ekranie (wolne miejsce < 870 px)
   instalator sam wybiera układ poziomy. Przełączanie jest zablokowane w trakcie instalacji.
-- Samuraj nosi biało-czerwoną flagę: macha nią, kręci, kłania się i tnie mieczem podczas postoju na napisie,
-  a po udanej instalacji wbija ją w koniec paska postępu.
-- Podgląd klatek bohatera: `python tests/hero_sheet.py /tmp/hero.png`.
+- Samuraj (2.3.0 – animacje napisane od nowa): pozy z klatek kluczowych z krzywymi wygładzania, płynne
+  przenikanie między każdym ruchem (bieg, scenka, skok), odwrotna kinematyka nóg (stopy nie ślizgają się),
+  przyspieszanie i hamowanie, przykucnięcie przed skokiem i amortyzacja lądowania, mruganie, smuga ostrza
+  liczona z prawdziwego toru miecza. Rekwizyty mają zawsze jeden stan: flaga w ręce / wbita w ziemię /
+  na plecach (sashimono), miecz w pochwie / w dłoni (pochwa zostaje na plecach), tykwa u pasa / w dłoni.
+- Scenki na napisie: machanie flagą, ukłon z salutem flagą, młynek, kata mieczem (wbija flagę, dobywa,
+  trzy cięcia, pchnięcie, strzepnięcie, chowa miecz), rozglądanie się, łyk z tykwy, medytacja z lewitacją,
+  przeciąganie z ziewnięciem, kopnięcie kamyka, zimą drżenie z zimna, latem wachlarz; w biegu podskoki
+  i salta. Przerwana scenka najpierw sprząta (chowa miecz, podnosi flagę), dopiero potem samuraj skacze.
+- Po instalacji wbija dużą flagę w koniec paska i świętuje (podskoki z rękami w górze, co trzeci – salto).
+- Podgląd klatek bohatera: `python tests/hero_sheet.py /tmp/hero.png [zima|lato]`.
 
 
 ## Oficjalny launcher, logi i odliczanie (2.2.0)
@@ -152,5 +160,10 @@ podejrzanie. Ikona i dane wersji pochodzą z `assets/` (`python tools/make_icon.
   dlatego przy platformie „Epic / Launcher” instalator nie ogłasza sukcesu po samej podmianie: czeka na proces
   gry `wwm.exe` (do 20 min) i ogłasza sukces dopiero, gdy gra działa 30 s z tłumaczeniem. Pilnuje też pliku
   głównego w `LocalData\Patch` i od razu przywraca tłumaczenie, gdy launcher/gra podmieni go na oryginał.
+- **Weryfikacja launchera po zamknięciu gry (2.3.0)**: launcher przywraca wtedy oryginalny plik główny
+  w `LocalData\Patch`. Instalator nie traktuje tego jako uszkodzonej instalacji – status zostaje
+  „TŁUMACZENIE AKTUALNE” z dopiskiem, a „Uruchom grę (PL)” wgrywa tłumaczenie z kopii lokalnej
+  (`Spolszczenie_Data\WWMPL\<język>\payload`). Również „Zainstaluj / aktualizuj” korzysta z tej kopii,
+  gdy wersja się zgadza – nic nie jest pobierane ponownie.
 - **Monitor**: `tools/wwm_monitor.ps1` (tylko obserwuje) nagrywa start/stop procesów launchera i gry oraz każdą
   zmianę plików tłumaczeń z opisem TŁUMACZENIE / ORYGINAŁ – do diagnozy zachowania launchera.

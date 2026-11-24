@@ -243,6 +243,13 @@ class Engine:
 
             for index, spec in enumerate(jobs):
                 self.check_cancelled()
+                cached = payload_path(data, spec)
+                if matches(cached, spec.sha256):
+                    # tłumaczenie tej wersji już leży w kopii (np. launcher przywrócił oryginał) – bez pobierania
+                    self.progress(0.05 + 0.80 * (index + 1) / len(jobs), f"Kopia lokalna: {spec.name}")
+                    self.logger.info("%s: używam lokalnej kopii tłumaczenia (bez pobierania)", spec.name)
+                    atomic_copy(cached, staging / spec.name)
+                    continue
                 self._download(spec, staging / spec.name, 0.05 + 0.80 * index / len(jobs), 0.80 / len(jobs))
             for spec in manifest.diffs:
                 if (staging / spec.name).exists():
@@ -337,7 +344,7 @@ class Engine:
                 if file_hash(target) == spec.original:
                     self.logger.warning("%s: launcher przywrócił oryginał – podmieniam przed startem", spec.name)
                     atomic_copy(payload_path(self.data, spec), target)
-            if not has_installed_files(root, self.data, manifest):
+            if not has_installed_files(root, self.data, manifest, allow_restored=False):
                 raise OperationError("Brakuje plików tłumaczenia lub uległy zmianie. Zainstaluj spolszczenie ponownie.")
             watched, entries, was_missing = [], [], {}
             for spec in manifest.diffs:

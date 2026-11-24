@@ -233,27 +233,51 @@ def test_low_screen_falls_back_to_wide(qapp, monkeypatch, tmp_path):
 
 def test_hero_acts_and_planting_flag(qapp):
     from PySide6.QtGui import QImage, QPainter, QColor
-    from wwmpl.character import Hero
+    from wwmpl.character import CLIPS, Hero
     h = Hero()
     h.set_rails({"title": (20, 400, 100), "bar": (20, 400, 100)})
+    img = QImage(300, 150, QImage.Format_ARGB32); img.fill(QColor("black"))
+    p = QPainter(img)
     seen = set()
-    for _ in range(60 * 90):                      # 90 s patrolu: pojawiają się różne scenki, bez wyjątków
+    for i in range(60 * 120):                     # 2 min patrolu: różne scenki, rysowanie bez wyjątków
         h.update(1 / 60)
         if h.act:
             seen.add(h.act)
-    assert len(seen) >= 3
+        if i % 7 == 0:
+            h.draw(p, QColor("#2f6f8f"), QColor("#d6403f"), winter=(i // 1800) % 2, summer=(i // 2400) % 2)
+        if h.act is None:                         # poza scenką rekwizyty zawsze wracają na miejsce
+            assert h.flag_slot == "hand" and h.sword_slot == "back" and h.gourd_slot == "hip"
+    assert len(seen) >= 5
+    for name in CLIPS:                            # każda scenka i faza skoku daje się narysować
+        h._start_action(name)
+        for _ in range(int(CLIPS[name].dur * 60) + 2):
+            h.update(1 / 60)
+            h.draw(p, QColor("#2f6f8f"), QColor("#d6403f"), 1.0, 1.0)
+    h._reset_props()
     h.set_mode("celebrate"); h.set_progress(1.0)
     for _ in range(60 * 4):
         h.update(1 / 60)
-    assert h.plant_progress() == 1.0
-    img = QImage(300, 150, QImage.Format_ARGB32); img.fill(QColor("black"))
-    p = QPainter(img)
-    for act in (None, "wave", "bow", "twirl", "slash"):
-        h.act, h.act_t, h.act_dur = act, 0.5, 1.0
-        h.draw(p, QColor("#2f6f8f"), QColor("#d6403f"))
+    assert h.plant_progress() == 1.0 and h.flag_slot == "ground"
     p.end()
     h.set_mode("patrol")
     assert h.plant_progress() == 0.0               # po zmianie trybu flaga wraca do ręki
+    for _ in range(60 * 3):
+        h.update(1 / 60)
+    assert h.flag_slot == "hand" and h.rail == "title"   # samuraj podniósł flagę i wrócił na napis
+
+
+def test_hero_interrupted_kata_cleans_up_props(qapp):
+    from wwmpl.character import Hero
+    h = Hero()
+    h.set_rails({"title": (20, 400, 100), "bar": (20, 400, 160)})
+    h._start_action("kata")
+    for _ in range(int(3.9 * 0.5 * 60)):          # w połowie: flaga w ziemi, miecz w dłoni
+        h.update(1 / 60)
+    assert h.flag_slot == "ground" and h.sword_slot == "hand"
+    h.set_mode("bar")
+    for _ in range(60 * 3):
+        h.update(1 / 60)
+    assert h.sword_slot == "back" and h.flag_slot == "hand" and h.rail == "bar"
 
 
 def test_variant_picker_switches_status_and_is_saved(window, world, monkeypatch):

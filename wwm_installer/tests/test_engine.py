@@ -714,3 +714,36 @@ def test_launch_repairs_main_file_restored_by_launcher(lworld, lserver, session,
     monkeypatch.setattr(Engine, "_game_running", lambda self: True)
     assert engine(lworld, lserver, session).launch(str(lworld.game), "launcher") == "patched"
     assert lworld.pkg("en").read_bytes() == lworld.translated("en", "main")
+
+
+def test_launcher_verification_after_game_close_needs_no_redownload(lworld, lserver, session, monkeypatch, fast_watch):
+    lworld.publish()
+    lworld.install_game_files("en")
+    engine(lworld, lserver, session).install()
+    # po zamknięciu gry launcher weryfikuje pliki: oryginał pliku głównego i diffu wraca na dysk
+    lworld.pkg("en").write_bytes(lworld.original("en", "main"))
+    lworld.diff("en").write_bytes(lworld.original("en", "diff"))
+    status = compute_status(lworld.game, "en", "1.0.0")
+    assert status.state == "current" and status.restored               # nie „WYMAGA PONOWNEJ INSTALACJI”
+    # serwer znika: ponowna instalacja i uruchomienie działają wyłącznie z kopii lokalnej
+    for lang in ("en", "de"):
+        for key in ("main", "diff"):
+            (lworld.repo / "files" / lang / lworld.name(lang, key)).unlink()
+    e = engine(lworld, lserver, session)
+    e.install()
+    assert lworld.pkg("en").read_bytes() == lworld.translated("en", "main")
+    assert any("Kopia lokalna" in text for _, text in e.log)
+    lworld.pkg("en").write_bytes(lworld.original("en", "main"))
+    monkeypatch.setattr(operations, "start_game", FakeGame(lworld, "en"))
+    monkeypatch.setattr(Engine, "_game_running", lambda self: True)
+    assert engine(lworld, lserver, session).launch(str(lworld.game), "launcher") == "patched"
+    assert lworld.pkg("en").read_bytes() == lworld.translated("en", "main")
+    assert compute_status(lworld.game, "en", "1.0.0").restored is False
+
+
+def test_steam_main_file_restored_still_requires_install(world, server, session):
+    world.publish()
+    world.install_game_files("en")
+    engine(world, server, session).install()
+    world.pkg("en").write_bytes(world.original("en", "main"))       # Steam: weryfikacja spójności plików
+    assert compute_status(world.game, "en", "1.0.0").state == "incomplete"

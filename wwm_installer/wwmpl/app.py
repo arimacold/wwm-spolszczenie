@@ -26,7 +26,7 @@ from .scene import FxOverlay, SceneWidget, make_cursor, make_icon
 from .widgets import (TITLE_FAMILIES, AuthorsFlyout, GlassCard, GlowButton, CountdownToast, IconTile, LogPanel, MessageDialog, PathPill, VariantPicker, ProgressTrack, Segmented,
                       ShadowLabel, StatusBadge, TitleBar, Theme, body_font)
 
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.3.0"
 MOOD_FOR_LANGUAGE = {"en": "day", "de": "night"}
 STATUS_COLORS = {"other_variant": "#ffc94d", "current": "#3ddc84", "outdated": "#ffc94d", "incomplete": "#ffc94d", "legacy": "#ffc94d",
                  "unknown": "#ffc94d", "none": "#ff7a7a", "no_game": "#ff5d5d", "error": "#ff7a7a"}
@@ -496,6 +496,9 @@ class MainWindow(QWidget):
         self.log.info("Status (%s/%s/%s): %s | lokalnie=%s serwer=%s", self.language, self.variant, self.platform,
                       status.state, status.local_version, status.server_version)
         sub = getattr(status, "sub", None)
+        if sub is None and getattr(status, "restored", False):
+            self.log.info("Launcher przywrócił oryginalny plik główny – tłumaczenie czeka w kopii lokalnej")
+            sub = "Launcher przywrócił pliki – „Uruchom grę (PL)” wgra je bez pobierania."
         if sub is None:
             sub = ("Wskaż folder gry." if status.state == "no_game" else
                    f"Najnowsza wersja na serwerze: {status.server_version or 'brak połączenia'}")

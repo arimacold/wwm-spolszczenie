@@ -438,12 +438,29 @@ class Status:
     message: str
     local_version: Optional[str] = None
     server_version: Optional[str] = None
+    restored: bool = False   # launcher przywrócił oryginał pliku głównego – wgramy go z kopii przy starcie gry
 
 
-def has_installed_files(root: Path, data: Path, manifest: Manifest) -> bool:
+def launcher_restored(root: Path, data: Path, spec: FileSpec) -> bool:
+    """Wersja z launchera: po zamknięciu gry launcher weryfikuje pliki i przywraca oryginał pliku głównego
+    w LocalData\\Patch. To nie jest uszkodzona instalacja – tłumaczenie leży w kopii (payload) i wraca przy
+    uruchomieniu gry przez instalator, bez ponownego pobierania."""
+    target = spec.target(root)
+    return (not spec.is_diff and target.parent == root / DIFF_DIR
+            and file_hash(target) == spec.original and matches(payload_path(data, spec), spec.sha256))
+
+
+def restored_packages(root: Path, data: Path, manifest: Manifest) -> list:
+    return [spec for spec in manifest.packages if launcher_restored(root, data, spec)]
+
+
+def has_installed_files(root: Path, data: Path, manifest: Manifest, allow_restored: bool = True) -> bool:
     for spec in manifest.packages:
-        if not matches(spec.target(root), spec.sha256):
-            return False
+        if matches(spec.target(root), spec.sha256):
+            continue
+        if allow_restored and launcher_restored(root, data, spec):
+            continue
+        return False
     return all(matches(payload_path(data, spec), spec.sha256) for spec in manifest.diffs)
 
 
@@ -460,15 +477,20 @@ def compute_status(root: Optional[Path], language: str, server_version: Optional
         return Status("none", "BRAK SPOLSZCZENIA", None, server_version)
     if not has_installed_files(root, data, manifest):
         return Status("incomplete", "WYMAGA PONOWNEJ INSTALACJI", manifest.version, server_version)
+    restored = bool(restored_packages(root, data, manifest))
     if manifest.variant != variant:
         name = VARIANTS[manifest.variant][0].upper()
-        return Status("other_variant", f"ZAINSTALOWANO WARIANT {name} ({manifest.version})",
-                      manifest.version, server_version)
-    if not server_version:
-        return Status("unknown", f"ZAINSTALOWANO ({manifest.version})", manifest.version, None)
-    if server_version != manifest.version:
-        return Status("outdated", f"DOSTĘPNA AKTUALIZACJA (masz {manifest.version})", manifest.version, server_version)
-    return Status("current", f"TŁUMACZENIE AKTUALNE ({manifest.version})", manifest.version, server_version)
+        status = Status("other_variant", f"ZAINSTALOWANO WARIANT {name} ({manifest.version})",
+                        manifest.version, server_version)
+    elif not server_version:
+        status = Status("unknown", f"ZAINSTALOWANO ({manifest.version})", manifest.version, None)
+    elif server_version != manifest.version:
+        status = Status("outdated", f"DOSTĘPNA AKTUALIZACJA (masz {manifest.version})", manifest.version,
+                        server_version)
+    else:
+        status = Status("current", f"TŁUMACZENIE AKTUALNE ({manifest.version})", manifest.version, server_version)
+    status.restored = restored
+    return status
 
 
 # ------------------------------------------------------------------ znajdowanie gry
