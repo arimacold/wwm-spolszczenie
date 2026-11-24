@@ -9,6 +9,8 @@ from PySide6.QtCore import QCoreApplication
 from PySide6.QtWidgets import QApplication, QWidget
 
 import wwmpl.app as appmod
+
+ORIGINAL_OFFER = appmod.MainWindow.offer_auto_close
 import wwmpl.core as core
 import wwmpl.operations as operations
 
@@ -39,6 +41,7 @@ def window(qapp, world, server, monkeypatch, tmp_path):
     monkeypatch.setattr(appmod.MainWindow, "show_message", lambda self, *a, **k: None)  # bez blokujących dialogów
     monkeypatch.setattr(appmod.MainWindow, "ask_use_anyway", lambda self, names: False)
     monkeypatch.setattr(appmod.MainWindow, "confirm_story_variant", lambda self: True)
+    monkeypatch.setattr(appmod.MainWindow, "offer_auto_close", lambda self: None)
     w = appmod.MainWindow(base_url=server)
     w.show()
     assert pump(lambda: w.status is not None)
@@ -167,10 +170,10 @@ def _inside(window):
 
 def test_layouts_switch_and_everything_fits(window):
     from wwmpl import settings
-    assert window.layout_mode == "tall" and (window.width(), window.height()) == (600, 830) and not _inside(window)
+    assert window.layout_mode == "tall" and (window.width(), window.height()) == (600, 890) and not _inside(window)
     window.toggle_layout()
     pump(lambda: False, 0.3)
-    assert window.layout_mode == "wide" and (window.width(), window.height()) == (880, 720)
+    assert window.layout_mode == "wide" and (window.width(), window.height()) == (880, 760)
     assert not _inside(window), _inside(window)
     assert not _overlaps(window), _overlaps(window)
     assert window.scene.width() == 880 and window.overlay.width() == 880
@@ -195,7 +198,7 @@ def test_layout_is_restored_on_start(qapp, world, server, monkeypatch, tmp_path)
     w = appmod.MainWindow(base_url=server)
     w.show()
     pump(lambda: False, 0.3)
-    assert (w.width(), w.height()) == (880, 720) and not _inside(w)
+    assert (w.width(), w.height()) == (880, 760) and not _inside(w)
     w.scene.timer.stop()
     w.hide()
 
@@ -277,3 +280,58 @@ def test_story_warning_can_send_user_back_to_full(window, monkeypatch):
     assert window.variant == "full" and window.variant_picker.value == "full"
     assert settings.load().get("variant") in (None, "full")
     assert "w budowie" in window.variant_picker.tips["story"]
+
+
+def test_story_variant_is_winter_and_launch_is_summer(window, world, monkeypatch):
+    world.publish_story()
+    window.variant_picker.set_value("story")
+    assert window.scene.mood.name == "winter"
+    window.seg_language.set_value("de")
+    assert window.scene.mood.name == "winter_night"
+    window.seg_language.set_value("en")
+    window.variant_picker.set_value("full")
+    assert window.scene.mood.name == "day"
+    from wwmpl import operations
+    monkeypatch.setattr(operations.Engine, "launch", lambda self, path, platform: "patched")
+    window.run_launch()
+    assert window.scene.mood.name == "summer"
+    assert pump(lambda: not window.busy)
+
+
+def test_farewell_countdown_strikes_and_closes(window, monkeypatch):
+    monkeypatch.setattr(appmod.MainWindow, "COUNTDOWN", 1)
+    monkeypatch.setattr(appmod.MainWindow, "offer_auto_close", ORIGINAL_OFFER)   # fixture ją wyłącza
+    window.offer_auto_close()
+    hero = window.scene.hero
+    assert hero.mode == "farewell" and window._countdown.isVisible()
+    assert "Zamykam za" in window._countdown.caption.text()
+    assert pump(lambda: not window.isVisible(), 4)            # cięcie, rozsypanie i zamknięcie okna
+    assert hero.fw_strike is not None and window.overlay.shards
+
+
+def test_farewell_can_be_cancelled(window, monkeypatch):
+    monkeypatch.setattr(appmod.MainWindow, "COUNTDOWN", 2)
+    monkeypatch.setattr(appmod.MainWindow, "offer_auto_close", ORIGINAL_OFFER)
+    window.offer_auto_close()
+    window._countdown.btn_keep.clicked.emit()
+    assert pump(lambda: window.scene.hero.mode == "patrol", 3)
+    pump(lambda: False, 2.5)
+    assert window.isVisible()                                 # „Nie zamykaj” – okno zostaje
+
+
+def test_log_panel_slides_in_and_copies_report(window):
+    from PySide6.QtWidgets import QApplication
+    from wwmpl import logs
+    logs.get().info("TEST-LINIA-123")
+    window.toggle_logs()
+    assert pump(lambda: window.log_panel.isVisible() and window.log_panel.y() <= window.log_panel.target.y() + 1, 2)
+    assert "TEST-LINIA-123" in window.log_panel.view.toPlainText()
+    logs.get().info("NOWA-LINIA-NA-ZYWO")
+    assert pump(lambda: "NOWA-LINIA-NA-ZYWO" in window.log_panel.view.toPlainText(), 2)
+    window.log_panel.copy()
+    text = QApplication.clipboard().text()
+    assert "Instalator: v" in text and "Folder gry:" in text and "TEST-LINIA-123" in text
+    assert window.log_panel.btn_copy.text().startswith("Skopiowano")
+    window.toggle_logs()
+    assert pump(lambda: not window.log_panel.isVisible(), 2)
+    assert not _inside(window)

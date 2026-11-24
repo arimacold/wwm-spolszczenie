@@ -4,10 +4,11 @@ from __future__ import annotations
 import math
 from typing import Callable, Optional
 
-from PySide6.QtCore import (QEasingCurve, QEvent, QPointF, QRectF, Qt, QTimer, QVariantAnimation, Signal)
+from PySide6.QtCore import (QEasingCurve, QEvent, QObject, QPointF, QRectF, Qt, QTimer, QVariantAnimation, Signal)
 from PySide6.QtGui import (QBrush, QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPen,
                            QPixmap, QPolygonF)
-from PySide6.QtWidgets import QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QToolTip, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (QApplication, QDialog, QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton,
+                               QToolTip, QVBoxLayout, QWidget)
 
 BODY_FONT = "Segoe UI"
 TITLE_FAMILIES = ["Palatino Linotype", "Book Antiqua", "Georgia", "Times New Roman", "serif"]
@@ -211,9 +212,15 @@ class GlowButton(QPushButton):
             p.setBrush(Qt.NoBrush)
             p.drawPath(path)
         elif self.kind == "ghost":
-            p.setPen(QPen(QColor(255, 255, 255, int(70 + 110 * hv) if self.isEnabled() else 40), 1.2))
-            p.setBrush(QColor(255, 255, 255, int(22 + 36 * hv) if self.isEnabled() else 10))
+            # ciemne, półprzezroczyste tło – czytelne także na jasnym (dziennym, zimowym, letnim) niebie
+            on = self.isEnabled()
+            p.setPen(QPen(QColor(255, 255, 255, int(120 + 110 * hv) if on else 70), 1.3))
+            p.setBrush(QColor(12, 18, 40, int(150 + 50 * hv) if on else 105))
             p.drawPath(path)
+            if hv > 0.01:
+                p.setBrush(QColor(255, 255, 255, int(26 * hv)))
+                p.drawPath(path)
+            text_color = QColor(255, 255, 255, 255 if on else 165)
         else:  # link
             text_color = with_alpha(QColor("white"), 0.75 + 0.25 * hv)
             if hv > 0:
@@ -764,6 +771,95 @@ class MessageDialog(QDialog):
         p.drawLine(QPointF(r.left() + 28, r.top() + 1.5), QPointF(r.left() + 78, r.top() + 1.5))
 
 
+class CountdownToast(QWidget):
+    """Subtelny pasek nad stopką: mały pierścień z sekundami, krótki tekst i „Nie zamykaj”."""
+    finished_countdown = Signal()
+    cancelled = Signal()
+
+    def __init__(self, parent, seconds: int = 10):
+        super().__init__(parent)
+        self.total = float(seconds)
+        self.left = float(seconds)
+        self.setFixedSize(410, 46)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(50, 0, 10, 0)
+        row.setSpacing(6)
+        self.caption = QLabel()
+        self.caption.setFont(body_font(9.5))
+        self.caption.setTextFormat(Qt.RichText)
+        self.caption.setStyleSheet("color:rgba(255,255,255,235); background:transparent;")
+        self.btn_keep = GlowButton("Nie zamykaj", "link", height=32, size=9)
+        self.btn_keep.setFixedWidth(100)
+        self.btn_keep.clicked.connect(self.cancel)
+        row.addWidget(self.caption, 1)
+        row.addWidget(self.btn_keep)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._anim = QVariantAnimation(self, duration=300)
+        self._anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._anim.valueChanged.connect(lambda y: self.move(self.x(), int(y)))
+        self._done = False
+        self._update_caption()
+
+    def start(self, x: int, y: int) -> None:
+        self.move(x, self.parentWidget().height())
+        self.show()
+        self.raise_()
+        self._anim.setStartValue(float(self.parentWidget().height()))
+        self._anim.setEndValue(float(y))
+        self._anim.start()
+        self._timer.start(50)
+
+    def _update_caption(self) -> None:
+        n = max(0, math.ceil(self.left - 1e-6))
+        self.caption.setText(f"<b>Spolszczenie działa!</b>&nbsp; Zamykam za {n} s")
+
+    def _tick(self) -> None:
+        self.left = max(0.0, self.left - 0.05)
+        self._update_caption()
+        self.update()
+        if self.left <= 0 and not self._done:
+            self._done = True
+            self._timer.stop()
+            self.finished_countdown.emit()
+            self._slide_out()
+
+    def cancel(self) -> None:
+        if self._done:
+            return
+        self._done = True
+        self._timer.stop()
+        self.cancelled.emit()
+        self._slide_out()
+
+    def _slide_out(self) -> None:
+        self._anim.stop()
+        self._anim.setStartValue(float(self.y()))
+        self._anim.setEndValue(float(self.parentWidget().height() + 10))
+        self._anim.finished.connect(self.hide)
+        self._anim.start()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
+        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        p.setPen(QPen(QColor(61, 220, 132, 120), 1.2))
+        p.setBrush(QColor(10, 16, 36, 245))
+        p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
+        c = QPointF(24, r.center().y())
+        radius = 13.0
+        p.setPen(QPen(QColor(255, 255, 255, 40), 3))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(c, radius, radius)
+        frac = self.left / self.total if self.total else 0.0
+        p.setPen(QPen(QColor("#3ddc84"), 3, Qt.SolidLine, Qt.RoundCap))
+        p.drawArc(QRectF(c.x() - radius, c.y() - radius, radius * 2, radius * 2), 90 * 16, int(360 * 16 * frac))
+        p.setFont(body_font(9, bold=True))
+        p.setPen(QColor("white"))
+        p.drawText(QRectF(c.x() - radius, c.y() - radius, radius * 2, radius * 2), Qt.AlignCenter,
+                   str(max(0, math.ceil(self.left - 1e-6))))
+
+
 class IconTile(QWidget):
     """Kwadratowa ikonka-przycisk (poradnik, wsparcie, autorzy)."""
     clicked = Signal()
@@ -841,6 +937,22 @@ class IconTile(QWidget):
             p.setBrush(with_alpha(QColor("#ff6f91"), 0.35 + 0.5 * hv))
             p.setPen(QPen(QColor("#ffd0dc"), 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
             p.drawPath(heart)
+        elif self.kind == "logs":     # zwój/kartka z wierszami logu
+            page = QPainterPath()
+            page.moveTo(-7, -9)
+            page.lineTo(3.5, -9)
+            page.lineTo(7.5, -5)
+            page.lineTo(7.5, 9)
+            page.lineTo(-7, 9)
+            page.closeSubpath()
+            p.setBrush(with_alpha(ink, 0.18))
+            p.drawPath(page)
+            p.drawLine(QPointF(3.5, -9), QPointF(3.5, -5))
+            p.drawLine(QPointF(3.5, -5), QPointF(7.5, -5))
+            p.setPen(QPen(with_alpha(QColor("#9fe3d2"), 0.95), 1.6, Qt.SolidLine, Qt.RoundCap))
+            for k, w in enumerate((8.0, 10.5, 6.5)):
+                y = -1.5 + k * 3.6
+                p.drawLine(QPointF(-4.2, y), QPointF(-4.2 + w, y))
         else:                          # dwie osoby
             p.setBrush(with_alpha(ink, 0.25))
             for dx, s in ((5.5, 0.82), (-4.5, 1.0)):
@@ -853,6 +965,136 @@ class IconTile(QWidget):
                 body.cubicTo(-7, 0.5, 7, 0.5, 7, 9)
                 p.drawPath(body)
                 p.restore()
+
+
+class _LogBridge(QObject):
+    """Przenosi nowe linie logu z dowolnego wątku do wątku interfejsu."""
+    line = Signal(str)
+
+
+class LogPanel(QWidget):
+    """Subtelny panel wysuwany od dołu: podgląd logów na żywo, Kopiuj i Otwórz folder."""
+
+    def __init__(self, parent, context: Callable[[], dict]):
+        super().__init__(parent)
+        from . import logs
+        self._logs = logs
+        self.context = context
+        self.setVisible(False)
+        self.shown = False
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(18, 14, 18, 14)
+        outer.setSpacing(8)
+        head = QHBoxLayout()
+        title = QLabel("Logi instalatora")
+        title.setFont(body_font(12, bold=True))
+        title.setStyleSheet("color:white; background:transparent;")
+        hint = QLabel("przydadzą się przy zgłaszaniu problemu")
+        hint.setFont(body_font(9))
+        hint.setStyleSheet("color:rgba(255,255,255,150); background:transparent;")
+        self.btn_x = IconButton("close", self)
+        self.btn_x.clicked.connect(self.toggle)
+        head.addWidget(title)
+        head.addSpacing(8)
+        head.addWidget(hint, 1, Qt.AlignBottom)
+        head.addWidget(self.btn_x)
+        outer.addLayout(head)
+        self.view = QPlainTextEdit(self)
+        self.view.setReadOnly(True)
+        self.view.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.view.setMaximumBlockCount(logs.MAX_LINES)
+        mono = QFont("Consolas")
+        mono.setStyleHint(QFont.Monospace)
+        mono.setPointSizeF(8.3)
+        self.view.setFont(mono)
+        self.view.setStyleSheet(
+            "QPlainTextEdit { background: rgba(0,0,0,110); color: rgba(225,235,255,225); border: 1px solid "
+            "rgba(255,255,255,40); border-radius: 10px; padding: 6px; selection-background-color: rgba(120,160,255,120); }"
+            "QScrollBar:vertical, QScrollBar:horizontal { background: transparent; width: 8px; height: 8px; }"
+            "QScrollBar::handle { background: rgba(255,255,255,60); border-radius: 4px; }"
+            "QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }")
+        outer.addWidget(self.view, 1)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.btn_copy = GlowButton("Kopiuj logi", "primary", height=38, size=10)
+        self.btn_folder = GlowButton("Otwórz folder z logami", "ghost", height=38, size=9.5)
+        self.btn_copy.clicked.connect(self.copy)
+        self.btn_folder.clicked.connect(self.open_folder)
+        row.addWidget(self.btn_copy, 1)
+        row.addWidget(self.btn_folder, 1)
+        outer.addLayout(row)
+        self._bridge = _LogBridge()
+        self._bridge.line.connect(self._append)
+        logs.subscribe(self._bridge.line.emit)
+        self._anim = QVariantAnimation(self, duration=280)
+        self._anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._anim.valueChanged.connect(self._slide)
+        self._anim.finished.connect(self._anim_done)
+        self.target = QRectF()
+
+    def _append(self, line: str) -> None:
+        if self.isVisible():
+            bar = self.view.verticalScrollBar()
+            at_end = bar.value() >= bar.maximum() - 4
+            self.view.appendPlainText(line)
+            if at_end:
+                bar.setValue(bar.maximum())
+
+    def place(self, rect) -> None:
+        """Docelowe położenie (zależne od układu okna)."""
+        self.target = QRectF(rect)
+        if self.shown and self._anim.state() != QVariantAnimation.Running:
+            self.setGeometry(rect)
+
+    def toggle(self) -> None:
+        self.shown = not self.shown
+        start_y = self.y() if self.isVisible() else self.parentWidget().height()
+        if self.shown:
+            self.view.setPlainText("\n".join(self._logs.recent()))
+            self.view.verticalScrollBar().setValue(self.view.verticalScrollBar().maximum())
+            self.setGeometry(int(self.target.x()), int(start_y), int(self.target.width()), int(self.target.height()))
+            self.show()
+            self.raise_()
+            end_y = self.target.y()
+        else:
+            end_y = self.parentWidget().height()
+        self._anim.stop()
+        self._anim.setStartValue(float(start_y))
+        self._anim.setEndValue(float(end_y))
+        self._anim.start()
+
+    def _slide(self, y) -> None:
+        self.move(int(self.target.x()), int(y))
+
+    def _anim_done(self) -> None:
+        if not self.shown:
+            self.hide()
+
+    def copy(self) -> None:
+        QApplication.clipboard().setText(self._logs.report_text(self.context()))
+        self.btn_copy.setText("Skopiowano ✓")
+        QTimer.singleShot(1600, lambda: self.btn_copy.setText("Kopiuj logi"))
+
+    def open_folder(self) -> None:
+        import os
+        folder = self._logs.log_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        opener = getattr(os, "startfile", None)
+        if opener:
+            opener(str(folder))
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect()).adjusted(2, 2, -2, -2)
+        g = QLinearGradient(0, r.top(), 0, r.bottom())
+        g.setColorAt(0, QColor(18, 24, 50, 246))
+        g.setColorAt(1, QColor(8, 12, 28, 250))
+        p.setBrush(QBrush(g))
+        p.setPen(QPen(with_alpha(Theme.color("accent2"), 0.5), 1.3))
+        p.drawRoundedRect(r, 16, 16)
+        p.setPen(QPen(Theme.color("accent2"), 3, Qt.SolidLine, Qt.RoundCap))
+        p.drawLine(QPointF(r.left() + 24, r.top() + 1.5), QPointF(r.left() + 70, r.top() + 1.5))
 
 
 class AuthorsFlyout(QWidget):

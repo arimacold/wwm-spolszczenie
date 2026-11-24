@@ -24,8 +24,8 @@ python -m nuitka ^
   --company-name="Arima" ^
   --product-name="Where Winds Meet - Instalator spolszczenia" ^
   --file-description="Instalator polskiego tlumaczenia Where Winds Meet" ^
-  --file-version=2.1.0.0 ^
-  --product-version=2.1.0.0 ^
+  --file-version=2.2.0.0 ^
+  --product-version=2.2.0.0 ^
   --include-package=wwmpl ^
   --nofollow-import-to=pytest,tkinter,unittest,PIL ^
   --output-dir=build ^

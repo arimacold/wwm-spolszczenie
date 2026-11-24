@@ -12,24 +12,25 @@ from pathlib import Path
 from typing import Optional
 
 import requests
-from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, Qt, QTimer, QVariantAnimation, Signal
 from PySide6.QtGui import QColor, QFont, QIcon
 from PySide6.QtWidgets import (QApplication, QBoxLayout, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
                                QVBoxLayout, QWidget)
 
-from . import core, settings
+from . import core, logs, settings
 from .core import (AUTHORS, COFFEE_URL, DEFAULT_VARIANT, LANGUAGES, RAW_URL, VARIANTS, variant_url, STEAM_GUIDE_URL, Cancelled, Journal, OperationError, Status,
-                   compute_status, find_game_path, game_lock, is_valid_game_path)
+                   compute_status, describe_game_folder, find_game_path, game_lock, is_valid_game_path,
+                   is_steam_path, resolve_game_root)
 from .operations import Engine, fetch_server_version
 from .scene import FxOverlay, SceneWidget, make_cursor, make_icon
-from .widgets import (TITLE_FAMILIES, AuthorsFlyout, GlassCard, GlowButton, IconTile, MessageDialog, PathPill, VariantPicker, ProgressTrack, Segmented,
+from .widgets import (TITLE_FAMILIES, AuthorsFlyout, GlassCard, GlowButton, CountdownToast, IconTile, LogPanel, MessageDialog, PathPill, VariantPicker, ProgressTrack, Segmented,
                       ShadowLabel, StatusBadge, TitleBar, Theme, body_font)
 
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
 MOOD_FOR_LANGUAGE = {"en": "day", "de": "night"}
 STATUS_COLORS = {"other_variant": "#ffc94d", "current": "#3ddc84", "outdated": "#ffc94d", "incomplete": "#ffc94d", "legacy": "#ffc94d",
                  "unknown": "#ffc94d", "none": "#ff7a7a", "no_game": "#ff5d5d", "error": "#ff7a7a"}
-SIZES = {"wide": (880, 720), "tall": (600, 830)}
+SIZES = {"wide": (880, 760), "tall": (600, 890)}
 SCREEN_MARGIN = 40   # tyle wolnego miejsca musi zostać na ekranie (pasek zadań, ramki)
 
 
@@ -57,6 +58,7 @@ class MainWindow(QWidget):
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window | Qt.WindowMinimizeButtonHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setWindowTitle("Where Winds Meet – Instalator")
+        self.log = logs.setup(f"v{APP_VERSION}")
         app = QApplication.instance()
         if app is not None and "QToolTip" not in app.styleSheet():
             # dymki w stylu instalatora zamiast systemowych (jasnych)
@@ -81,7 +83,7 @@ class MainWindow(QWidget):
         Theme.normal_cursor = make_cursor(False)
         Theme.icon = make_icon(64)
         self.setWindowIcon(QIcon(make_icon(256)))
-        self.scene = SceneWidget(self, MOOD_FOR_LANGUAGE[self.language])
+        self.scene = SceneWidget(self, self.base_mood())
         self.scene.setGeometry(0, 0, self.win_w, self.win_h)
         self.scene.setCursor(Theme.normal_cursor)
         Theme.mood = self.scene.mood
@@ -103,6 +105,12 @@ class MainWindow(QWidget):
         self.scene.hooks.append(self._frame)
         self.refresh_path()
         QTimer.singleShot(0, self.update_rails)
+
+    def base_mood(self) -> str:
+        """Motyw sceny: wariant fabularny = zima, pełny = dzień (EN) / noc (DE)."""
+        if self.variant == "story":
+            return "winter" if self.language == "en" else "winter_night"
+        return MOOD_FOR_LANGUAGE[self.language]
 
     @staticmethod
     def initial_layout() -> str:
@@ -171,6 +179,7 @@ class MainWindow(QWidget):
         self.variant_picker.tips["full"] = "Pełne tłumaczenie: dialogi, opisy, przedmioty i menu po polsku."
         self.variant_picker.changed.connect(self.on_variant)
         self.hint = small_label("", False, 190, 9.5)
+        self.hint.setContentsMargins(2, 6, 0, 4)     # oddech nad i pod podpowiedzią
         self.hint.setStyleSheet("color: rgba(255,255,255,190); background: transparent;")
         path_row = QHBoxLayout()
         path_row.setSpacing(8)
@@ -217,7 +226,8 @@ class MainWindow(QWidget):
         body.addLayout(row)
         body.addSpacing(4)
         restore_row = QHBoxLayout()
-        self.btn_restore = GlowButton("PRZYWRÓĆ ORYGINALNE TŁUMACZENIE", "ghost", height=38, size=9.5)
+        self.btn_restore = GlowButton("↺   PRZYWRÓĆ ORYGINALNE TŁUMACZENIE", "ghost", height=42, size=9.5)
+        self.btn_restore.setFont(body_font(9.5, bold=True, spacing=0.6))
         self.btn_restore.setFixedWidth(330)
         self.btn_restore.clicked.connect(self.run_restore)
         restore_row.addStretch()
@@ -247,6 +257,13 @@ class MainWindow(QWidget):
         version.setFixedWidth(64)
         spacer = QWidget(self.scene)
         spacer.setFixedWidth(64)
+        spacer_row = QHBoxLayout(spacer)
+        spacer_row.setContentsMargins(0, 0, 0, 0)
+        self.tile_logs = IconTile("logs", "Logi instalatora (przy zgłaszaniu problemu)", spacer, size=38)
+        spacer_row.addStretch()
+        spacer_row.addWidget(self.tile_logs)
+        self.log_panel = LogPanel(self, self.log_context)   # rodzic = okno, żeby leżał nad warstwą z bohaterem
+        self.tile_logs.clicked.connect(self.toggle_logs)
         footer.addWidget(version)
         footer.addStretch()
         for tile in (self.tile_guide, self.tile_support, self.tile_authors):
@@ -271,14 +288,14 @@ class MainWindow(QWidget):
         while grid.count():
             grid.takeAt(0)
         if tall:
-            grid.setContentsMargins(22, 16, 22, 14)
+            grid.setContentsMargins(22, 18, 22, 20)
             grid.addWidget(self.lbl_platform, 0, 0)
             grid.addWidget(self.seg_platform, 0, 1, Qt.AlignRight)
             grid.addWidget(self.lbl_language, 1, 0)
             grid.addWidget(self.seg_language, 1, 1, Qt.AlignRight)
             grid.setColumnStretch(0, 1)
         else:
-            grid.setContentsMargins(26, 18, 26, 16)
+            grid.setContentsMargins(26, 18, 26, 20)
             grid.addWidget(self.lbl_platform, 0, 0)
             grid.addWidget(self.lbl_language, 0, 1)
             grid.addWidget(self.seg_platform, 1, 0)
@@ -292,9 +309,10 @@ class MainWindow(QWidget):
         grid.addWidget(self.badge, 7, 0, 1, 2)
         margin = 32 if tall else 56
         self.body_layout.setContentsMargins(margin, 0, margin, 0)
-        self.body_layout.itemAt(1).spacerItem().changeSize(0, 50 if tall else 34)
-        self.lbl_variant.setVisible(tall)          # w poziomym brakuje wysokości; kafelki opisują się same
-        grid.setVerticalSpacing(7 if tall else 6)
+        self.body_layout.itemAt(1).spacerItem().changeSize(0, 50 if tall else 40)
+
+        grid.setVerticalSpacing(9 if tall else 7)
+        self.lbl_variant.setVisible(True)
         self.body_layout.invalidate()
         self.root_layout.itemAt(1).spacerItem().changeSize(0, 20 if tall else 22)
         if tall:
@@ -331,8 +349,26 @@ class MainWindow(QWidget):
         self.scene.layout().activate()
         QTimer.singleShot(0, self.update_rails)
         QTimer.singleShot(80, self.update_rails)
+        if hasattr(self, "log_panel"):
+            QTimer.singleShot(90, self.place_log_panel)
         if not initial:
             settings.save(layout=mode)
+
+    def log_context(self) -> dict:
+        status = self.status.state if self.status else "—"
+        return {"Instalator": f"v{APP_VERSION}", "Platforma": self.platform, "Język": self.language,
+                "Wariant": self.variant, "Folder gry": self.game_path or "nie wykryto", "Status": status}
+
+    def place_log_panel(self) -> None:
+        footer_top = self.tile_guide.mapTo(self.scene, QPoint(0, 0)).y() - 10
+        height = int(self.win_h * (0.50 if self.layout_mode == "tall" else 0.55))
+        margin = 18
+        self.log_panel.place(QRect(margin, max(46, footer_top - height), self.win_w - 2 * margin,
+                                   min(height, footer_top - 46)))
+
+    def toggle_logs(self) -> None:
+        self.place_log_panel()
+        self.log_panel.toggle()
 
     def _flyout_hover_changed(self, who: str, on: bool) -> None:
         self._flyout_hover[who] = on
@@ -372,7 +408,13 @@ class MainWindow(QWidget):
         s.hero.set_rails({
             "title": (x0 + 6, x0 + self.title.text_width() - 6, origin.y() + self.title.cap_top()),
             "bar": (tp.x() + 6, tp.x() + self.track.width() - 6, tp.y() + 3),
+            "corner": self.close_button_center(),
         })
+
+    def close_button_center(self) -> tuple:
+        b = self.titlebar.btn_close
+        c = b.mapTo(self.scene, QPoint(b.width() // 2, b.height() // 2))
+        return (float(c.x()), float(c.y()))
 
     def _frame(self, dt: float) -> None:
         self.track.advance(dt)
@@ -407,7 +449,18 @@ class MainWindow(QWidget):
                 "Bez tego instalator nie ma jeszcze czego podmienić.")
 
     def refresh_path(self) -> None:
-        self.game_path = find_game_path(self.platform)
+        saved = settings.load().get(f"game_path_{self.platform}")
+        if saved and self.platform == "launcher" and is_steam_path(saved):
+            self.log.warning("Pomijam zapamiętany folder launchera, bo to instalacja ze Steam: %s", saved)
+            saved = None
+        if saved and is_valid_game_path(saved):
+            self.game_path = saved
+            self.log.info("Folder gry (%s) z ustawień: %s", self.platform, saved)
+        else:
+            self.game_path = find_game_path(self.platform)
+            self.log.info("Folder gry (%s) wykryty automatycznie: %s", self.platform, self.game_path or "BRAK")
+        if self.game_path:
+            self.log.info("Zawartość: %s", describe_game_folder(self.game_path))
         self.pill.set_path(self.game_path)
         self.refresh_status()
 
@@ -440,6 +493,8 @@ class MainWindow(QWidget):
         if generation != self.generation:
             return
         self.status = status
+        self.log.info("Status (%s/%s/%s): %s | lokalnie=%s serwer=%s", self.language, self.variant, self.platform,
+                      status.state, status.local_version, status.server_version)
         sub = getattr(status, "sub", None)
         if sub is None:
             sub = ("Wskaż folder gry." if status.state == "no_game" else
@@ -467,7 +522,7 @@ class MainWindow(QWidget):
 
     def on_language(self, value: str) -> None:
         self.language = value
-        self.scene.set_mood(MOOD_FOR_LANGUAGE[value])
+        self.scene.set_mood(self.base_mood())
         self.update_hint()
         self.refresh_status()
         if value == "de" and self.german_pack_missing():
@@ -489,20 +544,39 @@ class MainWindow(QWidget):
             return
         self.variant = value
         settings.save(variant=value)
+        self.scene.set_mood(self.base_mood())
         self.update_hint()
         self.refresh_status()
 
     def browse_path(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Wskaż główny folder gry Where Winds Meet (ten z folderem Package)")
+        path = QFileDialog.getExistingDirectory(
+            self, "Wskaż folder gry Where Winds Meet (np. Where Winds Meet, wwm_standard lub wwm_lite)")
         if not path:
             return
-        if is_valid_game_path(path):
-            self.game_path = os.path.abspath(os.path.normpath(path))
+        root = resolve_game_root(path)
+        self.log.info("Ręcznie wskazano: %s -> rozpoznany folder gry: %s", path, root or "BRAK")
+        if root is not None and self.platform == "launcher" and is_steam_path(root):
+            self.log.warning("Przy platformie launcher wskazano folder ze Steam: %s", root)
+            self.show_message(
+                "To jest wersja ze Steam",
+                "Wskazany folder to instalacja gry ze Steam, a wybrana platforma to Epic / Launcher.\n\n"
+                "Jeśli grasz przez Steam – przełącz platformę na Steam.\n"
+                "Jeśli grasz przez oficjalny launcher – wskaż folder „wwm_standard” lub „wwm_lite”.", "error")
+            return
+        if root is not None:
+            self.game_path = str(root)
+            settings.save(**{f"game_path_{self.platform}": self.game_path})
+            self.log.info("Zawartość: %s", describe_game_folder(root))
             self.pill.set_path(self.game_path)
             self.refresh_status()
         else:
-            self.show_message("Zły folder", "We wskazanym folderze nie znaleziono plików gry.\n"
-                              "Upewnij się, że wybierasz główny katalog gry (ten, w którym jest folder „Package”).", "error")
+            self.show_message(
+                "Nie znaleziono gry",
+                "We wskazanym folderze ani obok niego nie znaleziono plików gry.\n\n"
+                "Wskaż folder instalacji gry:\n"
+                "• Steam / Epic – folder „Where Winds Meet” (z folderem Package),\n"
+                "• oficjalny launcher – folder „wwm_standard” lub „wwm_lite” (z folderem LocalData).\n\n"
+                "Jeśli gra była zainstalowana przed chwilą, uruchom ją raz, żeby pobrała pliki.", "error")
 
     def open_folder(self) -> None:
         opener = getattr(os, "startfile", None)
@@ -533,7 +607,7 @@ class MainWindow(QWidget):
         self.busy = True
         self.cancelled.clear()
         self.apply_enabled()
-        self.scene.set_mood(MOOD_FOR_LANGUAGE[self.language])
+        self.scene.set_mood("summer" if kind == "launch" else self.base_mood())   # gra startuje = lato
         self.track.shown = 0.0
         self.track.set_value(0.0)
         self.scene.hero.set_mode("bar")
@@ -562,16 +636,25 @@ class MainWindow(QWidget):
             else:
                 bridge.done.emit("launch", engine.launch(path, platform))
         except Cancelled:
+            self.log.info("%s: anulowano", kind)
             bridge.done.emit("cancelled", None)
         except OperationError as error:
+            self.log.error("%s nie powiodło się: %s", kind, error)
             bridge.failed.emit("Błąd", str(error))
         except PermissionError:
+            self.log.exception("Brak uprawnień podczas %s", kind)
             bridge.failed.emit("Brak uprawnień", "Odmowa dostępu! Uruchom instalator jako administrator "
                                "(prawy przycisk myszy → Uruchom jako administrator) i upewnij się, że gra jest wyłączona.")
         except requests.RequestException as error:
+            self.log.exception("Błąd sieci podczas %s", kind)
             bridge.failed.emit("Błąd sieci", f"Sprawdź połączenie z internetem.\n\n{error}")
         except OSError as error:
+            self.log.exception("Błąd pliku podczas %s", kind)
             bridge.failed.emit("Błąd pliku", f"{error}\n\nUpewnij się, że gra jest wyłączona.")
+        except Exception as error:   # nieprzewidziany błąd: pełny ślad w logu, czytelny komunikat w oknie
+            self.log.exception("Nieoczekiwany błąd podczas %s", kind)
+            bridge.failed.emit("Nieoczekiwany błąd", f"{error}\n\nSzczegóły są w logach (ikona w stopce) – "
+                               "skopiuj je i wyślij na Discordzie.")
         finally:
             bridge.finished.emit()
 
@@ -608,7 +691,7 @@ class MainWindow(QWidget):
             self.detail.setText("Anulowano operację.")
             self.track.set_value(0.0)
         elif kind == "install":
-            self.scene.set_mood("dawn")
+            self.scene.set_mood("dawn" if self.variant == "full" else self.base_mood())
             self.celebrate(7.0)
             self.track.set_value(1.0)
             self.detail.setText(f"Zainstalowano. W grze wybierz {LANGUAGES[payload]}.")
@@ -627,8 +710,45 @@ class MainWindow(QWidget):
                 self.detail.setText("Przywrócono oryginalne pliki.")
                 self.show_message("Przywrócono", "Przywrócono oryginalne pliki wybranego języka.")
         elif kind == "launch":
-            self.celebrate(3.0)
             self.track.set_value(1.0)
+            self.log.info("Uruchomienie zakończone: %s", payload)
+            QTimer.singleShot(400, self.offer_auto_close)
+
+    COUNTDOWN = 10
+
+    def offer_auto_close(self) -> None:
+        """Spolszczenie siedzi już w grze: samuraj się żegna, a mały pasek odlicza do zamknięcia."""
+        if self.closing or self.busy:
+            self.celebrate(3.0)
+            return
+        self.update_rails()
+        self.scene.hero.start_farewell(self.COUNTDOWN)
+        toast = CountdownToast(self, self.COUNTDOWN)
+        self._countdown = toast
+        toast.finished_countdown.connect(self._farewell_strike)
+        toast.cancelled.connect(self._farewell_cancelled)
+        tile = self.tile_guide.mapTo(self, QPoint(0, 0))
+        toast.start((self.win_w - toast.width()) // 2, tile.y() + self.tile_guide.height() // 2 - toast.height() // 2)
+
+    def _farewell_cancelled(self) -> None:
+        self.log.info("Użytkownik zostawił instalator otwarty")
+        self.scene.hero.cancel_farewell()
+
+    def _farewell_strike(self) -> None:
+        """Zero: samuraj przecina krzyżyk, okno rozsypuje się i znika."""
+        self.log.info("Automatyczne zamknięcie instalatora po udanym wstrzyknięciu")
+        self.scene.hero.strike()
+        cx, cy = self.close_button_center()
+
+        def cut():
+            self.overlay.slash_streak(cx, cy)
+            self.overlay.shatter(cx, cy)
+            self._fade = QVariantAnimation(self, duration=750, startValue=1.0, endValue=0.0)
+            self._fade.valueChanged.connect(lambda v: self.setWindowOpacity(float(v)))
+            self._fade.finished.connect(self.close)
+            self._fade.start()
+
+        QTimer.singleShot(300, cut)
 
     def on_failed(self, title: str, text: str) -> None:
         self.detail.setText("Operacja nie powiodła się.")

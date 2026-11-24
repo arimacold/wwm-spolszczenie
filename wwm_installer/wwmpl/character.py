@@ -10,7 +10,7 @@ import random
 from typing import Optional
 
 from PySide6.QtCore import QLineF, QPointF, QRectF, Qt
-from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen, QPolygonF
+from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPolygonF
 
 
 def pt(origin: QPointF, angle: float, length: float) -> QPointF:
@@ -18,8 +18,15 @@ def pt(origin: QPointF, angle: float, length: float) -> QPointF:
     return QPointF(origin.x() + math.sin(angle) * length, origin.y() + math.cos(angle) * length)
 
 
+def with_alpha_c(color: QColor, alpha: float) -> QColor:
+    out = QColor(color)
+    out.setAlphaF(max(0.0, min(1.0, alpha)) * color.alphaF())
+    return out
+
+
 def shade(color: QColor, factor: float) -> QColor:
-    return QColor(int(color.red() * factor), int(color.green() * factor), int(color.blue() * factor), color.alpha())
+    return QColor(min(255, int(color.red() * factor)), min(255, int(color.green() * factor)),
+                  min(255, int(color.blue() * factor)), color.alpha())
 
 
 class Hero:
@@ -52,6 +59,12 @@ class Hero:
         self.act: Optional[str] = None     # drobna scenka w trakcie postoju: wave | bow | twirl | slash
         self.act_t, self.act_dur, self.last_act = 0.0, 1.0, None
         self.act_fx = False
+        self.tap = False               # niecierpliwe przytupywanie (pożegnanie)
+        self.bubble_a = 0.0            # widoczność dymka „Do zobaczenia w grze!”
+        self.fw_t = self.fw_t0 = None  # zegar pożegnania i chwila dotarcia na koniec paska
+        self.fw_total = 10.0
+        self.fw_strike = self.fw_cancel = None
+        self.fw_jumped = False
 
     PLANT_TIME = 0.45
 
@@ -98,10 +111,115 @@ class Hero:
             self.sub_time = self.act_dur + random.uniform(0.2, 0.7)
 
     def plant_progress(self) -> float:
-        """0 = flaga w ręku, 1 = wbita w koniec paska (tylko w trybie celebrate, po dobiegnięciu)."""
+        """0 = flaga w ręku, 1 = wbita w koniec paska (celebrate po dobiegnięciu; pożegnanie: wbija i zabiera)."""
+        if self.mode == "farewell":
+            if self.fw_t0 is None or self.fw_cancel is not None:
+                return 0.0
+            rel = self.fw_t - self.fw_t0
+            if rel < self.PLANT_TIME:
+                return rel / self.PLANT_TIME
+            if rel < self.FW_UNPLANT:
+                return 1.0
+            return max(0.0, 1.0 - (rel - self.FW_UNPLANT) / 0.4)
         if self.mode != "celebrate" or self.celebrate_timer <= 0:
             return 0.0
         return min(1.0, self.celebrate_timer / self.PLANT_TIME)
+
+    # ------------------------------------------------------------------ pożegnanie (zamykanie instalatora)
+    FW_BOW = 0.5          # od dotarcia: ukłon
+    FW_UNPLANT = 2.2      # wyciągnięcie flagi
+    FW_JUMP = 2.65        # skok na napis
+
+    def start_farewell(self, total: float = 10.0) -> None:
+        self.mode = "farewell"
+        self.fw_t, self.fw_t0, self.fw_total = 0.0, None, float(total)
+        self.fw_strike = self.fw_cancel = None
+        self.fw_jumped = False
+        self.act, self.tap = None, False
+        self.rail = "bar" if self.jump is None else self.rail
+
+    def strike(self) -> None:
+        """Zero na liczniku: skok w stronę krzyżyka z cięciem."""
+        if self.mode == "farewell" and self.fw_cancel is None and self.fw_strike is None:
+            self.fw_strike = 0.0
+
+    def cancel_farewell(self) -> None:
+        if self.mode == "farewell" and self.fw_strike is None:
+            self.fw_cancel = 0.0
+
+    def _advance_jump(self, dt: float) -> bool:
+        j = self.jump
+        if j is None:
+            return False
+        j["u"] = min(1.0, j["u"] + dt / j["dur"])
+        u = j["u"]
+        self.x = j["start"][0] + (j["end"][0] - j["start"][0]) * u
+        self.y = j["start"][1] + (j["end"][1] - j["start"][1]) * u - j["h"] * 4 * u * (1 - u)
+        if u >= 1.0:
+            self.x, self.y = j["end"]
+            self.jump = None
+            self._puff(7)
+        return True
+
+    def _update_farewell(self, dt: float) -> bool:
+        self.fw_t += dt
+        running = self._advance_jump(dt)
+        self.bubble_a = 0.0
+        if self.fw_cancel is not None:               # „Nie zamykaj”: wzruszenie ramion i powrót do biegania
+            self.fw_cancel += dt
+            self.tap = False
+            self.act, self.act_dur, self.act_t = "shrug", 1.1, self.fw_cancel
+            if self.fw_cancel >= 1.1 and self.jump is None:
+                self.act = None
+                self.mode = "patrol"
+                self.sub, self.sub_time = "idle", 0.6
+            return running
+        if self.fw_strike is not None:               # cięcie w skoku przez krzyżyk
+            self.fw_strike += dt
+            self.tap = False
+            self.act, self.act_dur = "slash", 0.5
+            self.act_t = self.act_dur * (0.25 + 0.75 * min(1.0, self.fw_strike / 0.45))
+            if not self.fw_jumped and self.jump is None:
+                self.fw_jumped = True
+                cx, cy = self.rails.get("corner", (self.x + 40, self.y - 40))
+                self.facing = 1 if cx >= self.x else -1
+                self._start_jump((cx + 20 * self.facing, self.y), 0.55, max(20.0, self.y - cy + 8))
+                self.rail = "corner"
+            return True
+        if self.fw_t0 is None:                       # najpierw dobiegnij na koniec paska
+            self.y = self.rails["bar"][2] if self.jump is None else self.y
+            dx = self.bar_x() - self.x
+            if abs(dx) > 6 and self.jump is None:
+                self.facing = 1 if dx > 0 else -1
+                self.x += math.copysign(min(abs(dx), (140 + 3 * abs(dx)) * dt), dx)
+                return True
+            if self.jump is None:
+                self.fw_t0 = self.fw_t
+                self.facing = -1                     # przodem do okna, plecami do krawędzi
+                self._puff(8, QColor("#f4e9d2"))
+            return running
+        rel = self.fw_t - self.fw_t0
+        self.bubble_a = max(0.0, min(1.0, (rel - 0.3) / 0.25, (self.FW_JUMP - 0.05 - rel) / 0.3))
+        if rel < self.FW_BOW:
+            self.act = None
+        elif rel < self.FW_UNPLANT:
+            self.act, self.act_dur, self.act_t = "bow", self.FW_UNPLANT - self.FW_BOW, rel - self.FW_BOW
+        elif rel < self.FW_JUMP:
+            self.act = None
+        elif self.rail == "bar" and self.jump is None:
+            x0, x1, y = self.rails["title"]
+            self._start_jump((x1 - 4, y), 0.85, 70)
+            self.rail = "title"
+        if self.jump is None and self.rail == "title":
+            cx = self.rails.get("corner", (self.x + 50, 0))[0]
+            self.facing = 1 if cx >= self.x else -1  # czeka zwrócony do krzyżyka
+            if self.fw_t >= self.fw_total - 3.0:
+                self.act, self.act_dur, self.act_t = "ready", 3.0, self.fw_t - (self.fw_total - 3.0)
+                self.tap = False
+            else:
+                self.act, self.act_dur, self.act_t = "wave", 2.6, rel % 2.6
+                self.tap = True
+        return running
 
     # ------------------------------------------------------------------ aktualizacja
     def update(self, dt: float) -> None:
@@ -113,11 +231,19 @@ class Hero:
             d[3] += 40 * dt
             d[4] -= dt
         self.dust = [d for d in self.dust if d[4] > 0]
+        if "title" not in self.rails or "bar" not in self.rails:
+            return
+        if self.mode == "farewell":
+            running = self._update_farewell(dt)
+            self.run_vis += ((1.0 if running else 0.0) - self.run_vis) * min(1.0, dt * 9)
+            if running:
+                self.phase += dt * 12.0
+            return
+        self.tap = False
+        self.bubble_a = 0.0
         want = "title" if self.mode == "patrol" else "bar"
         if self.mode != "patrol" or self.jump is not None:
             self.act = None
-        if "title" not in self.rails or "bar" not in self.rails:
-            return
         running = False
 
         if self.jump is None and want != self.rail:
@@ -207,7 +333,8 @@ class Hero:
         return max(x0 + 4, min(x1 - 4, x))
 
     # ------------------------------------------------------------------ rysowanie
-    def draw(self, p: QPainter, robe: QColor, scarf: QColor) -> None:
+    def draw(self, p: QPainter, robe: QColor, scarf: QColor, winter: float = 0.0, summer: float = 0.0) -> None:
+        """winter/summer 0..1 – płynne przejście na strój zimowy / letni (z palety sceny)."""
         for d in self.dust:
             c = QColor(d[6]) if d[6] else QColor(235, 235, 235)
             c.setAlphaF(max(0.0, min(0.5, d[4])))
@@ -255,6 +382,9 @@ class Hero:
             p.drawLine(QLineF(b, c))
 
         def leg(offset: float):
+            if self.tap and offset == 0 and not air:      # przytupywanie przednią stopą
+                beat = max(0.0, math.sin(t * 9.0))
+                return pt(hip, 0.12, self.THIGH), pt(pt(hip, 0.12, self.THIGH), 0.12 - 0.9 * beat, self.SHIN)
             if air:
                 th, kn = (1.0, 1.5) if offset == 0 else (-0.6, 1.0)
             else:
@@ -277,7 +407,14 @@ class Hero:
 
         def arm(offset: float):
             front = offset != 0.0
-            if front and 0.0 < plant < 1.0 and self.mode == "celebrate":
+            if act == "shrug":                          # wzruszenie ramion: ręce na boki, dłonie w górę
+                k = math.sin(math.pi * min(1.0, act_u))
+                side = 1 if front else -1
+                ua = side * (0.25 + 1.0 * k)
+                fa = ua + side * 1.5 * k
+            elif front and act == "ready":              # miecz uniesiony do cięcia, lekkie drżenie
+                ua = fa = 4.15 + math.sin(t * 28) * 0.035
+            elif front and 0.0 < plant < 1.0 and self.mode in ("celebrate", "farewell"):
                 ua, fa = 0.55 + 0.4 * plant, 0.35
             elif front and act == "wave":
                 sw = math.sin(t * 8)
@@ -314,12 +451,12 @@ class Hero:
             prev = cur
 
         # flaga na plecach (gdy ręce są zajęte mieczem lub radością) — za tułowiem
-        flag_on_back = act == "slash" or arms_up or (self.mode == "celebrate" and plant < 1.0 and 0.0 < plant)
+        flag_on_back = (act in ("slash", "ready", "shrug") or arms_up) and plant <= 0.0
         if flag_on_back and plant < 1.0:
             self._flag(p, QPointF(hip.x() - 3, hip.y() + 3), math.pi + 0.78, -1, t, 2.4 + 2.0 * run, (4, 30))
 
         # miecz na plecach (podczas cięcia jest w dłoni)
-        slashing = act == "slash" and 0.12 < act_u < 0.92
+        slashing = (act == "slash" and 0.12 < act_u < 0.92) or act == "ready"
         if not slashing:
             p.setPen(QPen(QColor("#3a2a22"), 2.8, Qt.SolidLine, pen_cap))
             sword_top = QPointF(shoulder.x() - 4, shoulder.y() - 7)
@@ -336,6 +473,7 @@ class Hero:
         limb(hip, knee, foot, 4.6, far_pants)
         elbow, hand = arm(0.0)
         limb(shoulder, elbow, hand, 3.6, far_robe)
+        fan_hand = hand if (summer > 0.05 and not air and not arms_up and act != "bow") else None
         p.setPen(Qt.NoPen)
         p.setBrush(far_skin)
         p.drawEllipse(hand, 1.9, 1.9)
@@ -348,6 +486,21 @@ class Hero:
         ])
         p.setBrush(far_robe)
         p.drawPolygon(tail)
+
+        if winter > 0.02:   # długi płaszcz z futrzanym obszyciem, łopocze przy biegu
+            flap = math.sin(t * 7) * 2.0 * (0.3 + run)
+            cloak = QPolygonF([
+                QPointF(shoulder.x() - 5, shoulder.y() + 1), QPointF(shoulder.x() + 3, shoulder.y() + 1),
+                QPointF(hip.x() + 4, hip.y() + 8),
+                QPointF(hip.x() - 3 - 12 * run, hip.y() + 16 + flap),
+                QPointF(hip.x() - 9 - 21 * run, hip.y() + 13 + flap * 1.4),
+            ])
+            p.setBrush(with_alpha_c(shade(robe, 0.62), winter))
+            p.drawPolygon(cloak)
+            p.setPen(QPen(with_alpha_c(QColor("#f4f1ea"), winter), 2.4, Qt.SolidLine, Qt.RoundCap))
+            p.drawLine(QLineF(QPointF(hip.x() - 3 - 12 * run, hip.y() + 16 + flap),
+                              QPointF(hip.x() - 9 - 21 * run, hip.y() + 13 + flap * 1.4)))
+            p.setPen(Qt.NoPen)
 
         # tułów
         body = QPolygonF([
@@ -362,6 +515,18 @@ class Hero:
         p.setBrush(shade(robe, 1.25))
         p.drawRect(QRectF(hip.x() - 9, hip.y() + 12.5, 18, 1.6))
 
+        if fan_hand is not None:   # wachlarz rysowany przed tułowiem, żeby był widoczny
+            self._fan(p, QPointF(fan_hand.x() + 4, fan_hand.y() - 2), t, scarf, summer)
+            p.setPen(Qt.NoPen)
+            p.setBrush(far_skin)
+            p.drawEllipse(QPointF(fan_hand.x() + 4, fan_hand.y() - 2), 1.9, 1.9)
+
+        if winter > 0.02:
+            fur = with_alpha_c(QColor("#f4f1ea"), winter)
+            p.setBrush(fur)
+            for k, (dx, dy, r) in enumerate(((-3.5, 1.0, 3.6), (0.0, 0.2, 3.9), (3.5, 1.0, 3.4))):
+                p.drawEllipse(QPointF(neck.x() + dx, neck.y() + dy + 1.5), r, r * 0.8)
+
         # przednia noga
         knee, foot = leg(0.0)
         limb(hip, knee, foot, 4.8, self.PANTS)
@@ -372,9 +537,11 @@ class Hero:
         # przednia ręka
         elbow, hand = arm(math.pi)
         limb(shoulder, elbow, hand, 3.8, robe)
-        holding = not (act == "slash" or arms_up or self.mode == "celebrate")
+        holding = not (act in ("slash", "ready", "shrug") or arms_up or self.mode == "celebrate" or plant > 0)
         if act == "slash" and slashing:
             self._slash_fx(p, shoulder, hand, elbow, act_u, slash_angle(act_u))
+        elif act == "ready":
+            self._slash_fx(p, shoulder, hand, elbow, 0.1, 4.15)
         if holding:
             if act == "twirl":
                 theta = t * 11.0
@@ -408,7 +575,41 @@ class Hero:
         p.drawLine(QLineF(head.x() + 2, hat_y - 1, head.x() + 5, hat_y + 0.2))
         p.setPen(QPen(scarf, 1.1))
         p.drawLine(QLineF(head.x() - 5, hat_y + 3.0, head.x() - 5, hat_y + 8.5))  # tasiemka pod brodą
+        if winter > 0.02:
+            snow = with_alpha_c(QColor("#ffffff"), winter)
+            p.setPen(Qt.NoPen)
+            p.setBrush(snow)
+            cap = QPainterPath()
+            cap.moveTo(head.x() - 4.2, hat_y - 5.2)
+            cap.quadTo(head.x(), hat_y - 13.5, head.x() + 4.2, hat_y - 5.2)
+            cap.quadTo(head.x(), hat_y - 3.8, head.x() - 4.2, hat_y - 5.2)
+            p.drawPath(cap)
+            p.drawEllipse(QPointF(head.x() - 9.0, hat_y + 0.6), 2.6, 0.9)
+            p.drawEllipse(QPointF(head.x() + 8.0, hat_y + 0.8), 2.0, 0.8)
+            # para z ust w mroźnym powietrzu
+            cycle = (t % 2.2) / 2.2
+            if cycle < 0.55:
+                u = cycle / 0.55
+                for k in range(3):
+                    uk = max(0.0, u - k * 0.15)
+                    if uk <= 0:
+                        continue
+                    p.setBrush(QColor(255, 255, 255, int(150 * winter * (1 - uk))))
+                    p.drawEllipse(QPointF(head.x() + 7 + uk * 9 + k * 2, head.y() + 2 - uk * 5), 1.4 + uk * 2.4,
+                                  1.2 + uk * 2.0)
+        if summer > 0.05:   # kwiat za opaską kapelusza
+            fc = QPointF(head.x() - 7.5, hat_y - 1.6)
+            p.setPen(Qt.NoPen)
+            p.setBrush(with_alpha_c(QColor("#ff5d8f"), summer))
+            for k in range(5):
+                a = k * math.tau / 5 + t * 0.4
+                p.drawEllipse(QPointF(fc.x() + math.cos(a) * 1.9, fc.y() + math.sin(a) * 1.9), 1.5, 1.5)
+            p.setBrush(with_alpha_c(QColor("#ffd84d"), summer))
+            p.drawEllipse(fc, 1.1, 1.1)
         p.restore()
+
+        if self.bubble_a > 0.01:
+            self._bubble(p, "Do zobaczenia w grze!", self.bubble_a)
 
         if plant > 0.0:
             gx, gy = self.x + 15, self.rails["bar"][2] if "bar" in self.rails else self.y
@@ -420,6 +621,53 @@ class Hero:
                 p.drawEllipse(QPointF(gx, gy + 0.5), 7, 2)
             self._flag(p, base, math.pi + 0.22 * (1 - e), 1, t, 3.6 if plant >= 1.0 else 2.0,
                        (9 * (1 - e), 31 + 12 * e), scale=1.0 + 0.45 * e)
+
+    def _bubble(self, p: QPainter, text: str, alpha: float) -> None:
+        """Dymek nad głową – po lewej stronie bohatera (stoi zwykle przy prawej krawędzi okna)."""
+        font = QFont()
+        font.setPixelSize(11)
+        font.setBold(True)
+        fm = QFontMetrics(font)
+        w, h = fm.horizontalAdvance(text) + 18, 22
+        lift = (1 - alpha) * 6
+        x = self.x - w + 22
+        y = self.y - 82 - h + lift
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(x, y, w, h), 9, 9)
+        tail = QPainterPath()
+        tail.moveTo(x + w - 30, y + h - 1)
+        tail.lineTo(x + w - 20, y + h + 8)
+        tail.lineTo(x + w - 16, y + h - 1)
+        path = path.united(tail)
+        p.save()
+        p.setOpacity(alpha)
+        p.setPen(QPen(QColor(20, 30, 60, 120), 1.0))
+        p.setBrush(QColor(255, 255, 255, 238))
+        p.drawPath(path)
+        p.setFont(font)
+        p.setPen(QColor("#1b2550"))
+        p.drawText(QRectF(x, y, w, h), Qt.AlignCenter, text)
+        p.restore()
+
+    # ------------------------------------------------------------------ dodatki letnie
+    def _fan(self, p: QPainter, hand: QPointF, t: float, scarf: QColor, summer: float) -> None:
+        """Składany wachlarz – na postoju się nim wachluje, w biegu trzyma złożony."""
+        p.save()
+        p.translate(hand)
+        idle = 1.0 - self.run_vis
+        p.rotate(-35 + math.sin(t * 9) * 22 * idle)
+        open_ang = 20 + 80 * idle
+        fan = QPainterPath()
+        fan.moveTo(0, 0)
+        fan.arcTo(QRectF(-13, -13, 26, 26), 90 - open_ang / 2, open_ang)
+        fan.closeSubpath()
+        p.setPen(QPen(with_alpha_c(QColor("#7a4a26"), summer), 0.8))
+        p.setBrush(with_alpha_c(QColor("#fff3d6"), summer))
+        p.drawPath(fan)
+        p.setPen(QPen(with_alpha_c(scarf, summer), 1.2))
+        p.setBrush(Qt.NoBrush)
+        p.drawArc(QRectF(-11, -11, 22, 22), int((90 - open_ang / 2) * 16), int(open_ang * 16))
+        p.restore()
 
     # ------------------------------------------------------------------ flaga i efekty
     def _flag(self, p: QPainter, base: QPointF, theta: float, wind: int, t: float, amp: float,

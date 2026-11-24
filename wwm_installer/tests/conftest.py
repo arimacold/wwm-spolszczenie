@@ -21,12 +21,19 @@ def sha(data: bytes) -> str:
 class World:
     """Fałszywe repozytorium (serwowane po HTTP) + fałszywy folder gry."""
 
-    def __init__(self, tmp: Path):
+    def __init__(self, tmp: Path, layout: str = "steam"):
         self.repo = tmp / "repo"
-        self.game = tmp / "game"
+        self.layout = layout
+        # oficjalny launcher: wwm\wwm_standard z plikami w LocalData\Patch (bez Package\…\locale)
+        self.game = tmp / "wwm" / "wwm_standard" if layout == "launcher" else tmp / "game"
         (self.repo / "files").mkdir(parents=True)
         (self.repo / "files" / "orginal").mkdir()
-        (self.game / PACKAGE_DIR).mkdir(parents=True)
+        if layout == "launcher":
+            (self.game / DIFF_DIR).mkdir(parents=True)
+            (self.game / "Package").mkdir()
+            (self.game / "Engine" / "Binaries" / "Win64r").mkdir(parents=True)
+        else:
+            (self.game / PACKAGE_DIR).mkdir(parents=True)
         self.version = "1.0.0"
         self.content = {}   # (lang, key) -> (translated bytes, original bytes)
         for lang in ("en", "de"):
@@ -81,10 +88,11 @@ class World:
 
     def install_game_files(self, lang="en", small=False):
         for key in ("main",) + (("small",) if small else ()):
-            (self.game / PACKAGE_DIR / self.name(lang, key)).write_bytes(self.original(lang, key))
+            self.pkg(lang, key).write_bytes(self.original(lang, key))
 
     def pkg(self, lang, key="main"):
-        return self.game / PACKAGE_DIR / self.name(lang, key)
+        folder = DIFF_DIR if self.layout == "launcher" else PACKAGE_DIR
+        return self.game / folder / self.name(lang, key)
 
     def diff(self, lang, key="diff"):
         return self.game / DIFF_DIR / self.name(lang, key)
@@ -93,6 +101,22 @@ class World:
 @pytest.fixture
 def world(tmp_path):
     return World(tmp_path)
+
+
+@pytest.fixture
+def lworld(tmp_path):
+    return World(tmp_path, layout="launcher")
+
+
+@pytest.fixture
+def lserver(lworld):
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(lworld.repo))
+    handler.log_message = lambda *a, **k: None
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{httpd.server_address[1]}/"
+    httpd.shutdown()
 
 
 @pytest.fixture

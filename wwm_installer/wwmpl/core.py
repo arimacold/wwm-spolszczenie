@@ -9,6 +9,7 @@ import re
 import shutil
 import stat
 import tempfile
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -38,6 +39,17 @@ AUTHORS = (  # (nazwa, profil Steam, nick Discord)
 
 PACKAGE_DIR = Path("Package", "HD", "oversea", "locale")
 DIFF_DIR = Path("LocalData", "Patch", "HD", "oversea", "locale")
+# Wersja ze Steam trzyma pliki tłumaczeń w Package\…\locale, a wersja z oficjalnego launchera
+# w LocalData\Patch\…\locale (tam też gra pobiera pliki *_diff).
+
+
+def main_dir(root: Path, name: str) -> Path:
+    """Folder pliku głównego: tam, gdzie gra go faktycznie trzyma (Patch ma pierwszeństwo, jak w grze)."""
+    if (root / DIFF_DIR / name).exists():
+        return DIFF_DIR
+    if (root / PACKAGE_DIR).is_dir():
+        return PACKAGE_DIR
+    return DIFF_DIR
 DATA_DIR = Path("Spolszczenie_Data", "WWMPL")
 VERSION_FILE = "polish_version.txt"
 # Warianty tłumaczenia: klucz -> (nazwa, podfolder w repozytorium). Pełne leży w katalogu głównym repo.
@@ -134,7 +146,7 @@ class FileSpec:
         return "__small" in self.name
 
     def target(self, root: Path) -> Path:
-        return root / (DIFF_DIR if self.is_diff else PACKAGE_DIR) / self.name
+        return root / (DIFF_DIR if self.is_diff else main_dir(root, self.name)) / self.name
 
     def to_json(self) -> dict:
         data = {"sha256": self.sha256, "original": self.original}
@@ -386,16 +398,24 @@ class Journal:
 
 # ---------------------------------------------------------------- wersje i status
 
+def version_file_path(root: Path) -> Path:
+    return root / (PACKAGE_DIR if (root / PACKAGE_DIR).is_dir() else DIFF_DIR) / VERSION_FILE
+
+
 def read_version_file(root: Path) -> Optional[str]:
-    try:
-        return (root / PACKAGE_DIR / VERSION_FILE).read_text(encoding="utf-8").strip() or None
-    except OSError:
-        return None
+    for folder in (PACKAGE_DIR, DIFF_DIR):
+        try:
+            value = (root / folder / VERSION_FILE).read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if value:
+            return value
+    return None
 
 
 def sync_version_file(root: Path) -> None:
     """Plik `polish_version.txt` (jak w starym instalatorze) = wersja zainstalowanego tłumaczenia."""
-    path = root / PACKAGE_DIR / VERSION_FILE
+    path = version_file_path(root)
     versions = []
     for language in LANGUAGES:
         manifest = load_local_manifest(data_path(root, language), language)
@@ -454,7 +474,52 @@ def compute_status(root: Optional[Path], language: str, server_version: Optional
 # ------------------------------------------------------------------ znajdowanie gry
 
 def is_valid_game_path(path) -> bool:
-    return bool(path and (Path(path) / PACKAGE_DIR).is_dir())
+    """Główny folder gry: Steam/Epic mają Package/…/locale, oficjalny launcher – LocalData/Patch."""
+    if not path:
+        return False
+    root = Path(path)
+    return (root / PACKAGE_DIR).is_dir() or (root / DIFF_DIR).is_dir() or (root / "LocalData" / "Patch").is_dir()
+
+
+PREFERRED_SUBFOLDERS = ("wwm_standard", "wwm_ultimate", "wwm_lite", "Where Winds Meet", "WhereWindsMeet", "wwm")
+
+
+def resolve_game_root(path) -> Optional[Path]:
+    """Poprawia ręcznie wskazany folder: szuka korzenia gry w górę (np. wskazano locale lub Engine/Binaries)
+    i w dół (np. wskazano folder „wwm” z podfolderami wwm_standard / wwm_lite)."""
+    if not path:
+        return None
+    try:
+        start = Path(os.path.abspath(os.path.normpath(str(path))))
+    except (OSError, ValueError):
+        return None
+    current = start
+    for _ in range(8):
+        if is_valid_game_path(current):
+            return current
+        if current.parent == current:
+            break
+        current = current.parent
+    level1 = []
+    try:
+        level1 = [child for child in start.iterdir() if child.is_dir()]
+    except OSError:
+        pass
+    rank = {name.casefold(): i for i, name in enumerate(PREFERRED_SUBFOLDERS)}
+    level1.sort(key=lambda child: (rank.get(child.name.casefold(), 99), child.name.casefold()))
+    for child in level1:
+        if is_valid_game_path(child):
+            return child
+    for child in level1[:40]:
+        try:
+            grandchildren = sorted((g for g in child.iterdir() if g.is_dir()),
+                                   key=lambda g: (rank.get(g.name.casefold(), 99), g.name.casefold()))
+        except OSError:
+            continue
+        for grandchild in grandchildren:
+            if is_valid_game_path(grandchild):
+                return grandchild
+    return None
 
 
 def steam_libraries(steam_path: Path):
@@ -467,24 +532,117 @@ def steam_libraries(steam_path: Path):
         yield Path(found.replace("\\\\", "\\"))
 
 
-LAUNCHER_CANDIDATES = [
-    r"C:\Program Files\wwm\wwm_standard", r"C:\Program Files\wwm\wwm_lite",
-    r"C:\Program Files (x86)\wwm\wwm_standard", r"C:\Program Files (x86)\wwm\wwm_lite",
-    r"C:\NetEase\WWM\wwm_standard", r"C:\NetEase\WWM\wwm_lite",
-    r"C:\NetEase Games\WWM\wwm_standard", r"C:\NetEase Games\WWM\wwm_lite",
-    r"C:\Games\Where Winds Meet\wwm_standard", r"C:\Games\Where Winds Meet\wwm_lite",
-    r"D:\Games\Where Winds Meet\wwm_standard", r"D:\Games\Where Winds Meet\wwm_lite",
-    r"E:\Games\Where Winds Meet\wwm_standard", r"E:\Games\Where Winds Meet\wwm_lite",
-    r"C:\WWM\wwm_standard", r"C:\WWM\wwm_lite", r"D:\WWM\wwm_standard", r"D:\WWM\wwm_lite",
-    r"C:\Program Files\Epic Games\WhereWindsMeet\wwm_standard",
-    r"C:\Program Files (x86)\Epic Games\WhereWindsMeet\wwm_standard",
-    r"D:\Epic Games\WhereWindsMeet\wwm_standard",
-    r"C:\Users\Public\Games\Where Winds Meet\wwm_standard",
-    r"C:\Users\Public\Games\Where Winds Meet\wwm_lite",
+# Względne ścieżki sprawdzane na każdym dysku (C:, D:, E: …) – typowe miejsca instalacji launchera i Epic.
+LAUNCHER_RELATIVE = [
+    r"wwm", r"wwm\wwm_standard", r"wwm\wwm_lite", r"wwm_standard", r"wwm_lite", r"wwm_ultimate",
+    r"Where Winds Meet", r"WhereWindsMeet",
+    r"Games\wwm", r"Games\Where Winds Meet", r"Games\WhereWindsMeet",
+    r"Program Files\wwm", r"Program Files (x86)\wwm", r"Program Files\Where Winds Meet",
+    r"Program Files\Epic Games\WhereWindsMeet", r"Program Files (x86)\Epic Games\WhereWindsMeet",
+    r"Epic Games\WhereWindsMeet", r"Epic Games\Where Winds Meet",
+    r"NetEase\WWM", r"NetEase Games\WWM", r"NetEase\Where Winds Meet", r"NetEase Games\Where Winds Meet",
+    r"Users\Public\Games\Where Winds Meet",
 ]
+LAUNCHER_CANDIDATES = [rf"C:\{rel}" for rel in LAUNCHER_RELATIVE]   # zgodność wsteczna (testy, stary kod)
+
+
+def _available_drives() -> list:
+    if os.name != "nt":
+        return []
+    drives = []
+    for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+        root = f"{letter}:\\"
+        if os.path.exists(root):
+            drives.append(root)
+    return drives
+
+
+def _looks_like_wwm(display: str, key_name: str) -> bool:
+    text = f"{display} {key_name}".casefold()
+    if any(hint in text for hint in ("where winds meet", "wherewindsmeet", "燕云十六声")):
+        return True
+    return display.casefold().startswith("wwm") or key_name.casefold().startswith("wwm")
+
+
+def _path_from_registry_value(raw: str) -> Optional[Path]:
+    """InstallLocation / DisplayIcon ("C:\\x\\a.exe",0) / UninstallString ("C:\\x\\uninst.exe" /S) -> folder."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    quoted = re.match(r'\s*"([^"]+)"', raw)
+    if quoted:
+        raw = quoted.group(1)
+    else:
+        exe = re.match(r"(.+?\.(?:exe|ico|dll))\b", raw, re.IGNORECASE)
+        raw = exe.group(1) if exe else raw.split(",")[0]
+    candidate = Path(raw.strip())
+    if candidate.suffix.lower() in (".exe", ".ico", ".dll"):
+        candidate = candidate.parent
+    return candidate
+
+
+def _registry_install_locations(log) -> list:
+    """Wpisy „Programy i funkcje” (rejestr) – oficjalny launcher zwykle zapisuje tu miejsce instalacji."""
+    found = []
+    if winreg is None:
+        return found
+    roots = (
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
+    )
+    for hive, key_name in roots:
+        try:
+            with winreg.OpenKey(hive, key_name) as key:
+                count = winreg.QueryInfoKey(key)[0]
+                for index in range(count):
+                    try:
+                        sub_name = winreg.EnumKey(key, index)
+                        with winreg.OpenKey(key, sub_name) as sub:
+                            def value(name):
+                                try:
+                                    return str(winreg.QueryValueEx(sub, name)[0])
+                                except OSError:
+                                    return ""
+                            display = value("DisplayName")
+                            if not _looks_like_wwm(display, sub_name):
+                                continue
+                            for raw in (value("InstallLocation"), value("DisplayIcon"), value("UninstallString")):
+                                candidate = _path_from_registry_value(raw)
+                                if candidate is not None:
+                                    log.info("Rejestr: %s -> %s", display or sub_name, candidate)
+                                    found.append(candidate)
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return found
+
+
+def _epic_install_locations(log) -> list:
+    found = []
+    manifests = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "Epic" / "EpicGamesLauncher" / "Data" / "Manifests"
+    try:
+        items = list(manifests.glob("*.item"))
+    except OSError:
+        return found
+    for item in items:
+        try:
+            data = json.loads(item.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, ValueError):
+            continue
+        name = f"{data.get('DisplayName', '')} {data.get('AppName', '')}".casefold()
+        if "where winds" in name or "wherewinds" in name:
+            location = data.get("InstallLocation")
+            if location:
+                log.info("Epic: %s -> %s", data.get("DisplayName"), location)
+                found.append(Path(location))
+    return found
 
 
 def find_game_path(platform: str) -> Optional[str]:
+    from . import logs
+    log = logs.get()
     if platform == "steam":
         if winreg is None:
             return None
@@ -502,12 +660,228 @@ def find_game_path(platform: str) -> Optional[str]:
             for library in steam_libraries(steam_path):
                 candidate = library / "steamapps" / "common" / "Where Winds Meet"
                 if is_valid_game_path(candidate):
+                    log.info("Steam: znaleziono grę w %s", candidate)
                     return str(candidate.resolve())
+                log.debug("Steam: brak gry w %s", candidate)
+        log.warning("Steam: nie znaleziono gry w bibliotekach Steam")
         return None
-    for candidate in LAUNCHER_CANDIDATES:
-        if is_valid_game_path(candidate):
-            return os.path.abspath(os.path.normpath(candidate))
-    return None
+
+    return find_launcher_game(log)
+
+
+LAUNCHER_GAME_FOLDERS = ("wwm_standard", "wwm_lite", "wwm_ultimate")
+_LAUNCHER_PATH_RE = re.compile(r"[A-Za-z]:[\\/][^\"'\r\n<>|*?]{0,240}?wwm_(?:standard|lite|ultimate)", re.IGNORECASE)
+
+
+def is_steam_path(path) -> bool:
+    return "steamapps" in str(path).casefold()
+
+
+def _recent_activity(root: Path) -> float:
+    """Kiedy ostatnio gra była używana (najnowsza zmiana w LocalData) – do wyboru przy kilku instalacjach."""
+    for folder in (root / DIFF_DIR, root / "LocalData" / "Patch", root / "LocalData", root):
+        try:
+            return folder.stat().st_mtime      # gra odświeża ten folder przy każdym uruchomieniu
+        except OSError:
+            continue
+    return 0.0
+
+
+def _registry_values(hive, key_name: str) -> list:
+    names = []
+    if winreg is None:
+        return names
+    try:
+        with winreg.OpenKey(hive, key_name) as key:
+            count = winreg.QueryInfoKey(key)[1]
+            for index in range(count):
+                try:
+                    names.append(winreg.EnumValue(key, index)[0])
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    return names
+
+
+def _executed_game_paths(log) -> list:
+    """Ślady uruchomionej gry/launchera zapisane przez Windows (MuiCache, Asystent zgodności programów)."""
+    found = []
+    if winreg is None:
+        return found
+    sources = (
+        (winreg.HKEY_CURRENT_USER, r"Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache"),
+        (winreg.HKEY_CURRENT_USER,
+         r"Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Compatibility Assistant\Store"),
+    )
+    for hive, key_name in sources:
+        for name in _registry_values(hive, key_name):
+            lower = name.casefold()
+            if ".exe" not in lower:
+                continue
+            exe = name[:lower.index(".exe") + 4]
+            exe_lower = exe.casefold()
+            looks_like_game = ("\\engine\\binaries\\" in exe_lower and exe_lower.endswith("\\wwm.exe")) or \
+                any(f"\\{folder}\\" in exe_lower for folder in LAUNCHER_GAME_FOLDERS)
+            if looks_like_game and not is_steam_path(exe):
+                log.info("Ślad uruchomienia (%s): %s", key_name.rsplit("\\", 1)[-1], exe)
+                found.append(Path(exe).parent)
+    return found
+
+
+def _launcher_config_paths(folders: list, log) -> list:
+    """Pliki konfiguracyjne launchera (np. C:\\Program Files\\wwm) – szukamy w nich ścieżek wwm_standard/lite."""
+    found = []
+    for folder in folders:
+        try:
+            if not folder.is_dir():
+                continue
+        except OSError:
+            continue
+        for current, dirs, files in os.walk(folder):
+            if len(Path(current).relative_to(folder).parts) >= 3:
+                dirs.clear()
+            for name in files:
+                if not name.casefold().endswith((".json", ".ini", ".cfg", ".txt", ".xml", ".config", ".conf", ".dat", ".yaml")):
+                    continue
+                path = Path(current) / name
+                try:
+                    if path.stat().st_size > 2_000_000:
+                        continue
+                    text = path.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    continue
+                for match in _LAUNCHER_PATH_RE.findall(text.replace("\\\\", "\\")):
+                    log.info("Konfiguracja launchera %s: %s", path.name, match)
+                    found.append(Path(match.replace("/", "\\") if os.name == "nt" else match))
+    return found
+
+
+def _drive_scan_candidates() -> list:
+    """Na każdym dysku: X:\\wwm_standard, X:\\<folder>\\wwm_standard, X:\\<folder>\\wwm\\wwm_standard (+ lite/ultimate)."""
+    found = []
+    for drive in _available_drives():
+        root = Path(drive)
+        found.extend(root / rel for rel in LAUNCHER_RELATIVE)
+        try:
+            children = [child for child in root.iterdir() if child.is_dir()][:300]
+        except OSError:
+            continue
+        for child in children:
+            if child.name.casefold() in ("windows", "$recycle.bin", "system volume information", "programdata"):
+                continue
+            for folder in LAUNCHER_GAME_FOLDERS:
+                found.append(child / folder)
+                found.append(child / "wwm" / folder)
+    return found
+
+
+def _netease_launcher_dirs(log) -> list:
+    """HKCU\\Software\\Netease\\wwm -> installpath (folder launchera, np. C:\\Program Files\\wwm)."""
+    found = []
+    if winreg is None:
+        return found
+    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        for key_name in (r"Software\Netease\wwm", r"SOFTWARE\WOW6432Node\Netease\wwm"):
+            try:
+                with winreg.OpenKey(hive, key_name) as key:
+                    value = str(winreg.QueryValueEx(key, "installpath")[0]).strip().strip('"')
+            except OSError:
+                continue
+            if value:
+                log.info("Rejestr Netease\\wwm: folder launchera %s", value)
+                found.append(Path(value))
+    return found
+
+
+def launcher_setting_paths(launcher_dirs: list, log) -> list:
+    """InstallPath z setting.ini launchera (Win32\\deploy\\setting.ini) – zapis samego launchera, gdzie jest gra."""
+    found = []
+    for folder in launcher_dirs:
+        for ini in (folder / "Win32" / "deploy" / "setting.ini", folder / "deploy" / "setting.ini",
+                    folder / "setting.ini"):
+            try:
+                text = ini.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            for line in text.splitlines():
+                key, sep, value = line.partition("=")
+                if sep and key.strip().casefold() == "installpath" and value.strip():
+                    raw = value.strip().strip('"')
+                    path = Path(raw.replace("/", "\\") if os.name == "nt" else raw)
+                    log.info("setting.ini launchera (%s): InstallPath=%s", ini, raw)
+                    found.append(path)
+    return found
+
+
+def find_launcher_game(log) -> Optional[str]:
+    """Oficjalny launcher / Epic – bez instalacji ze Steama.
+    Kolejność: setting.ini launchera (pewne) -> ślady uruchomień, konfiguracja, Epic, dyski (ostatnio używana)."""
+    install_dirs = _registry_install_locations(log)
+    launcher_dirs = _netease_launcher_dirs(log) + [d for d in install_dirs if not is_steam_path(d)]
+    expanded = []
+    for folder in launcher_dirs:            # DisplayIcon wskazuje Win32\\deploy – dodaj też folder główny
+        expanded.append(folder)
+        if folder.name.casefold() == "deploy" and folder.parent.name.casefold() == "win32":
+            expanded.append(folder.parent.parent)
+    launcher_dirs = list({str(d).casefold(): d for d in expanded}.values())
+    for path in launcher_setting_paths(launcher_dirs, log):
+        if is_steam_path(path):
+            continue
+        root = resolve_game_root(path) if path.exists() else None
+        if root is not None and not is_steam_path(root):
+            log.info("Launcher: gra wg setting.ini -> %s", root)
+            return str(root)
+        log.warning("setting.ini wskazuje %s, ale nie ma tam plików gry", path)
+    launcher_dirs = [d for d in install_dirs if not is_steam_path(d)]
+    candidates = []
+    candidates += _executed_game_paths(log)
+    candidates += _launcher_config_paths(launcher_dirs, log)
+    candidates += launcher_dirs
+    candidates += _epic_install_locations(log)
+    candidates += _drive_scan_candidates()
+    candidates += [Path(c) for c in LAUNCHER_CANDIDATES]
+    roots, tried = {}, set()
+    for candidate in candidates:
+        key = str(candidate).casefold()
+        if key in tried or is_steam_path(candidate):
+            continue
+        tried.add(key)
+        try:
+            if not candidate.exists():
+                continue
+        except OSError:
+            continue
+        root = resolve_game_root(candidate)
+        if root is None or is_steam_path(root):
+            continue
+        roots.setdefault(str(root).casefold(), root)
+    if not roots:
+        log.warning("Launcher/Epic: nie znaleziono gry automatycznie (sprawdzono %d miejsc)", len(tried))
+        return None
+    ranked = sorted(roots.values(), key=_recent_activity, reverse=True)
+    for root in ranked:
+        log.info("Launcher/Epic: instalacja %s (ostatnia aktywność: %s)", root,
+                 time.strftime("%Y-%m-%d %H:%M", time.localtime(_recent_activity(root))))
+    log.info("Launcher/Epic: wybrano %s", ranked[0])
+    return str(ranked[0])
+
+
+def describe_game_folder(root) -> str:
+    """Krótki opis do logu: które foldery z plikami tłumaczeń istnieją."""
+    root = Path(root)
+    parts = []
+    for label, folder in (("Package/locale", PACKAGE_DIR), ("LocalData/Patch/locale", DIFF_DIR)):
+        path = root / folder
+        if path.is_dir():
+            try:
+                names = sorted(p.name for p in path.iterdir() if p.name.startswith("translate_words_map_"))
+            except OSError:
+                names = []
+            parts.append(f"{label}: {len(names)} plików ({', '.join(n.replace('translate_words_map_', '') for n in names[:8])})")
+        else:
+            parts.append(f"{label}: brak")
+    return "; ".join(parts)
 
 
 def start_game(game_path: str, platform: str, notify: Callable[[str], None]) -> None:
@@ -522,15 +896,82 @@ def start_game(game_path: str, platform: str, notify: Callable[[str], None]) -> 
         except OSError:
             notify("Steam nie odpowiedział automatycznie. Uruchom grę ręcznie z biblioteki.")
         return
-    names = ("WhereWindsMeet.exe", "WWM.exe", "WWM_Game.exe", "Launcher.exe")
-    for current, dirs, files in os.walk(game_path):
-        if len(Path(current).relative_to(game_path).parts) >= 3:
+    from . import logs
+    log = logs.get()
+    exe = find_official_launcher(log) if platform != "steam" else None
+    exe = exe or find_launch_exe(Path(game_path))
+    if exe is None:
+        log.warning("Nie znaleziono pliku .exe gry/launchera w %s", game_path)
+        notify("Nie znaleziono pliku .exe. Uruchom grę ręcznie ze swojej platformy – instalator poczeka na nią.")
+        return
+    log.info("Uruchamiam: %s", exe)
+    try:
+        opener(str(exe))
+    except OSError as error:
+        log.error("Nie udało się uruchomić %s: %s", exe, error)
+        notify("Nie udało się włączyć gry automatycznie. Uruchom ją ręcznie – instalator poczeka na nią.")
+
+
+GAME_EXE_NAMES = ("wherewindsmeet.exe", "wwm.exe", "wwm_game.exe")
+GAME_PROCESS = "wwm.exe"
+
+
+def process_running(name: str = GAME_PROCESS) -> bool:
+    """Czy działa proces o danej nazwie (Windows: tasklist, bez okna konsoli)."""
+    if os.name != "nt":
+        return False
+    import subprocess
+    try:
+        result = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {name}", "/FO", "CSV", "/NH"],
+                                capture_output=True, text=True, timeout=6, creationflags=0x08000000)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return f'"{name.casefold()}"' in (result.stdout or "").casefold()
+
+
+def find_official_launcher(log=None) -> Optional[Path]:
+    """launcher.exe oficjalnego klienta (np. C:\\Program Files\\wwm) – z wpisu instalacji w rejestrze."""
+    from . import logs
+    log = log or logs.get()
+    for folder in _netease_launcher_dirs(log) + _registry_install_locations(log):
+        if is_steam_path(folder):
+            continue
+        direct = folder / "Win32" / "deploy" / "launcher.exe"
+        if direct.is_file():
+            return direct
+        try:
+            for current, dirs, files in os.walk(folder):
+                if len(Path(current).relative_to(folder).parts) >= 3:
+                    dirs.clear()
+                for name in files:
+                    lower = name.casefold()
+                    if lower.endswith(".exe") and "launcher" in lower and "uninst" not in lower:
+                        return Path(current) / name
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def find_launch_exe(root: Path) -> Optional[Path]:
+    """Najpierw launcher (pilnuje aktualizacji gry), potem plik gry – bez względu na wielkość liter."""
+    for folder in (root, root.parent):
+        try:
+            for item in sorted(folder.iterdir()):
+                lower = item.name.casefold()
+                if item.is_file() and lower.endswith(".exe") and "launcher" in lower and "uninst" not in lower:
+                    return item
+        except OSError:
+            continue
+    best = None
+    for current, dirs, files in os.walk(root):
+        depth = len(Path(current).relative_to(root).parts)
+        if depth >= 4:
             dirs.clear()
-        for name in names:
-            if name in files:
-                try:
-                    opener(os.path.join(current, name))
-                except OSError:
-                    notify("Nie udało się włączyć gry automatycznie. Uruchom ją ręcznie.")
-                return
-    notify("Nie znaleziono pliku .exe. Uruchom grę ręcznie ze swojej platformy.")
+        dirs[:] = [d for d in dirs if d.casefold() not in ("package", "localdata", "spolszczenie_data")]
+        for name in files:
+            if name.casefold() in GAME_EXE_NAMES:
+                path = Path(current) / name
+                # wersja globalna gry leży w Engine\Binaries\Win64r
+                if best is None or ("win64r" in str(path).casefold() and "win64r" not in str(best).casefold()):
+                    best = path
+    return best

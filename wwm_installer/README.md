@@ -16,7 +16,8 @@ w grze), ale z zabezpieczeniami, kopiami zapasowymi i całkowicie nowym interfej
 | Migracja | stara instalacja (`.backup` + `polish_version.txt`) jest rozpoznawana i bezpiecznie przejmowana |
 | Interfejs | animowane tło dzień / noc / świt, bohater biegający po tytule i pasku postępu, własny kursor |
 
-Nastroje: **English → dzień**, **Deutsch → noc**, **po udanej instalacji → świt** (z animacją).
+Nastroje: **English → dzień**, **Deutsch → noc**, **po udanej instalacji → świt**, **wariant fabularny → zima**
+(śnieg, ośnieżone góry, samuraj w zimowym płaszczu), **„Uruchom grę” → lato** (samuraj z wachlarzem).
 
 ## Układ repozytorium `arimacold/wwm-spolszczenie`
 
@@ -117,3 +118,39 @@ podejrzanie. Ikona i dane wersji pochodzą z `assets/` (`python tools/make_icon.
 - Samuraj nosi biało-czerwoną flagę: macha nią, kręci, kłania się i tnie mieczem podczas postoju na napisie,
   a po udanej instalacji wbija ją w koniec paska postępu.
 - Podgląd klatek bohatera: `python tests/hero_sheet.py /tmp/hero.png`.
+
+
+## Oficjalny launcher, logi i odliczanie (2.2.0)
+
+- **Oficjalny launcher**: gra z launchera trzyma pliki tłumaczeń w `LocalData\Patch\HD\oversea\locale`
+  (bez `Package\…\locale`). Instalator podmienia plik główny tam, gdzie gra go faktycznie trzyma
+  (najpierw `LocalData\Patch`, potem `Package`).
+- **Wykrywanie dla launchera** – najpierw źródło pewne: `HKCU\Software\Netease\wwm` (`installpath` = folder
+  launchera, np. `C:\Program Files\wwm`) → `Win32\deploy\setting.ini` → `InstallPath=` (folder gry).
+  Launcher uruchamiany jest z `Win32\deploy\launcher.exe`. Gdy tego zapisu brak (nigdy nie wybiera instalacji
+  ze Steam – ścieżki ze `steamapps` są pomijane):
+  ślady uruchomionej gry w rejestrze (MuiCache, Asystent zgodności), pliki konfiguracyjne launchera z jego
+  folderu instalacji (np. `C:\Program Files\wwm`), manifesty Epic oraz foldery `wwm_standard` / `wwm_lite` /
+  `wwm_ultimate` na każdym dysku – także jeden poziom niżej (np. `D:\SteamLibrary\wwm_standard`).
+  Przy kilku instalacjach wybierana jest ostatnio używana.
+- **Ręczne wskazanie folderu** jest poprawiane automatycznie – można wskazać folder `wwm`, `wwm_standard`,
+  a nawet `locale` czy `Engine\Binaries`. Wybrany folder jest zapamiętywany osobno dla Steam i launchera.
+- **Uruchamianie**: najpierw launcher (`*launcher*.exe` w folderze gry lub wyżej), potem `wwm.exe`
+  z `Engine\Binaries\Win64r` (wielkość liter nie ma znaczenia).
+- **Logi**: `%LOCALAPPDATA%\WWM-Spolszczenie\logs\instalator.log` (rotacja 3 × 1 MB). Ikona w prawym
+  rogu stopki otwiera panel z podglądem na żywo, przyciskiem *Kopiuj logi* (z nagłówkiem: wersja, platforma,
+  język, wariant, folder, status) i *Otwórz folder z logami*.
+- **Pożegnanie**: po udanym wstrzyknięciu nad stopką wysuwa się mały pasek z odliczaniem 10 s.
+  Samuraj wbija flagę w pasek postępu, kłania się („Do zobaczenia w grze!”), zabiera flagę, skacze na napis,
+  czeka przy krzyżyku (macha flagą, przytupuje), w ostatnich 3 s dobywa miecza, a przy zerze przecina krzyżyk
+  w skoku – okno rozsypuje się w płatki / liście / śnieg i znika. *Nie zamykaj* przerywa odliczanie
+  (samuraj wzrusza ramionami i wraca na napis).
+
+- **Diagnostyka**: `tools/wwm_diagnostyka.ps1` (tylko odczyt) zapisuje na pulpicie raport o instalacjach gry,
+  launcherze, wpisach w rejestrze i budowie folderów – do wysłania przy problemach z wykrywaniem.
+- **Wstrzykiwanie z oficjalnym launcherem**: launcher sam weryfikuje i pobiera pliki zanim uruchomi grę,
+  dlatego przy platformie „Epic / Launcher” instalator nie ogłasza sukcesu po samej podmianie: czeka na proces
+  gry `wwm.exe` (do 20 min) i ogłasza sukces dopiero, gdy gra działa 30 s z tłumaczeniem. Pilnuje też pliku
+  głównego w `LocalData\Patch` i od razu przywraca tłumaczenie, gdy launcher/gra podmieni go na oryginał.
+- **Monitor**: `tools/wwm_monitor.ps1` (tylko obserwuje) nagrywa start/stop procesów launchera i gry oraz każdą
+  zmianę plików tłumaczeń z opisem TŁUMACZENIE / ORYGINAŁ – do diagnozy zachowania launchera.

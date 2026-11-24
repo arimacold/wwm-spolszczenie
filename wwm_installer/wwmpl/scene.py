@@ -1,5 +1,5 @@
 """Animowana scena 2D: niebo, góry z paralaksą, mgła, bambusy, cząsteczki (płatki, świetliki,
-gwiazdy), trzy nastroje (dzień / noc / świt) z płynnym przejściem, bohater i efekty kursora."""
+gwiazdy), nastroje (dzień / noc / świt / zima / zimowa noc / lato) z płynnym przejściem, bohater i efekty kursora."""
 from __future__ import annotations
 
 import math
@@ -25,19 +25,45 @@ PALETTES = {
         near=C("#4a7a70"), mist=C("#f7f1e8"), bamboo_far=C("#6bac84"), bamboo_near=C("#1b5843"),
         ground=C("#12402f"), petal=C("#ffb7c9"), robe=C("#2b9a8f"), scarf=C("#e0445a"),
         accent=C("#3b9be0"), accent2=C("#9fe3d2"),
-        sun=1.0, sun_y=0.25, moon=0.0, moon_y=0.80, stars=0.0, fireflies=0.0, petals=1.0, clouds=0.9, fog=0.35),
+        sun=1.0, sun_y=0.25, moon=0.0, moon_y=0.80, stars=0.0, fireflies=0.0, petals=1.0, clouds=0.9, fog=0.35,
+        snow=0.0, snowcap=0.0, winter=0.0, summer=0.0),
     "night": dict(
         sky_top=C("#060a26"), sky_bottom=C("#2b3b7c"), glow=C("#6c86d8"), far=C("#33468a"), mid=C("#1e2c60"),
         near=C("#111a3e"), mist=C("#7183c8"), bamboo_far=C("#193060"), bamboo_near=C("#050a1c"),
         ground=C("#040818"), petal=C("#bcd3ff"), robe=C("#7080ea"), scarf=C("#ff7a8a"),
         accent=C("#7d8cff"), accent2=C("#c2caff"),
-        sun=0.0, sun_y=0.80, moon=1.0, moon_y=0.22, stars=1.0, fireflies=1.0, petals=0.35, clouds=0.2, fog=0.55),
+        sun=0.0, sun_y=0.80, moon=1.0, moon_y=0.22, stars=1.0, fireflies=1.0, petals=0.35, clouds=0.2, fog=0.55,
+        snow=0.0, snowcap=0.0, winter=0.0, summer=0.0),
     "dawn": dict(
         sky_top=C("#4a4192"), sky_bottom=C("#ffb98f"), glow=C("#ffd37a"), far=C("#c68fb0"), mid=C("#94638f"),
         near=C("#523f6b"), mist=C("#ffdcc4"), bamboo_far=C("#735f8e"), bamboo_near=C("#2b2349"),
         ground=C("#1d1535"), petal=C("#ffc2d4"), robe=C("#e0566c"), scarf=C("#ffd36b"),
         accent=C("#ff9a62"), accent2=C("#ffe0b0"),
-        sun=1.0, sun_y=0.50, moon=0.0, moon_y=0.80, stars=0.12, fireflies=0.35, petals=1.8, clouds=1.0, fog=0.45),
+        sun=1.0, sun_y=0.50, moon=0.0, moon_y=0.80, stars=0.12, fireflies=0.35, petals=1.8, clouds=1.0, fog=0.45,
+        snow=0.0, snowcap=0.0, winter=0.0, summer=0.0),
+    # zima: wariant fabularny (EN = mroźny dzień, DE = zimowa noc)
+    "winter": dict(
+        sky_top=C("#7fa9d6"), sky_bottom=C("#eef4fb"), glow=C("#ffffff"), far=C("#c3d3e6"), mid=C("#97afc9"),
+        near=C("#6a8299"), mist=C("#f4f8fc"), bamboo_far=C("#7d9aa8"), bamboo_near=C("#2c4656"),
+        ground=C("#5d7792"), petal=C("#ffffff"), robe=C("#33598a"), scarf=C("#c8304a"),
+        accent=C("#3f97d0"), accent2=C("#d6efff"),
+        sun=0.55, sun_y=0.30, moon=0.0, moon_y=0.80, stars=0.0, fireflies=0.0, petals=0.0, clouds=1.0, fog=0.55,
+        snow=1.0, snowcap=1.0, winter=1.0, summer=0.0),
+    "winter_night": dict(
+        sky_top=C("#08122c"), sky_bottom=C("#36507f"), glow=C("#9fb8ff"), far=C("#47618f"), mid=C("#2c416c"),
+        near=C("#192848"), mist=C("#8aa1d2"), bamboo_far=C("#203658"), bamboo_near=C("#091326"),
+        ground=C("#2a3d62"), petal=C("#ffffff"), robe=C("#4c6cab"), scarf=C("#ff6f82"),
+        accent=C("#7aa2ff"), accent2=C("#d0e0ff"),
+        sun=0.0, sun_y=0.80, moon=1.0, moon_y=0.22, stars=1.0, fireflies=0.0, petals=0.0, clouds=0.3, fog=0.6,
+        snow=1.0, snowcap=0.85, winter=1.0, summer=0.0),
+    # lato: po kliknięciu „Uruchom grę” – pełne słońce, soczysta zieleń, wirujące liście
+    "summer": dict(
+        sky_top=C("#1c8be6"), sky_bottom=C("#ffe7a3"), glow=C("#fff1a8"), far=C("#8cbcc6"), mid=C("#4d9a84"),
+        near=C("#2d7848"), mist=C("#fff2d2"), bamboo_far=C("#5fae58"), bamboo_near=C("#145a28"),
+        ground=C("#195826"), petal=C("#9ee07a"), robe=C("#e6d4a6"), scarf=C("#ff7a35"),
+        accent=C("#f28a1e"), accent2=C("#ffe08a"),
+        sun=1.0, sun_y=0.17, moon=0.0, moon_y=0.80, stars=0.0, fireflies=0.15, petals=1.0, clouds=0.45, fog=0.2,
+        snow=0.0, snowcap=0.0, winter=0.0, summer=1.0),
 }
 
 
@@ -120,6 +146,20 @@ class Petal:
         self.rank = rnd.random()
 
 
+class Flake:
+    def __init__(self, rnd: random.Random, w: float, h: float, spread=True):
+        self.reset(rnd, w, h, spread)
+
+    def reset(self, rnd, w, h, spread=False):
+        self.x = rnd.uniform(-30, w + 30)
+        self.y = rnd.uniform(-10, h) if spread else rnd.uniform(-40, -5)
+        self.depth = rnd.random()                      # 0 = daleko (mały, wolny), 1 = blisko
+        self.vy = 14 + 34 * self.depth + rnd.uniform(-4, 4)
+        self.size = 0.9 + 2.6 * self.depth
+        self.phase = rnd.uniform(0, math.tau)
+        self.sway = rnd.uniform(8, 26)
+
+
 class SceneWidget(QWidget):
     PERIOD = 1500
 
@@ -166,6 +206,7 @@ class SceneWidget(QWidget):
         for x in (0.006, 0.03, 0.056, 0.944, 0.97, 0.994):
             self.stalks.append(Stalk(rnd, w * x, h * rnd.uniform(0.05, 0.22), "near"))
         self.petals = [Petal(self.rnd, w, h) for _ in range(46)]
+        self.flakes = [Flake(self.rnd, w, h) for _ in range(120)]
 
     def resizeEvent(self, event):
         self._build_geometry()
@@ -238,6 +279,12 @@ class SceneWidget(QWidget):
             petal.rot += petal.vrot * dt
             if petal.y > h + 20 or petal.x > w + 60:
                 petal.reset(self.rnd, w, h)
+        if self.mood["snow"] > 0.01:
+            for flake in self.flakes:
+                flake.y += flake.vy * dt
+                flake.x += (6 + math.sin(self.t * 0.9 + flake.phase) * flake.sway * 0.08) * dt * (0.5 + flake.depth)
+                if flake.y > h + 6:
+                    flake.reset(self.rnd, w, h)
         if self.progress_source is not None:
             self.hero.set_progress(self.progress_source())
         for hook in self.hooks:
@@ -316,6 +363,10 @@ class SceneWidget(QWidget):
             offset = (t * speed + self.px * par) % self.PERIOD
             top = m.color(key)
             bottom = m.mix(key, "mist", 0.65 if i < 2 else 0.25)
+            if m["snowcap"] > 0.01:   # zimą wierzchołki gór bieleją
+                k = m["snowcap"] * (0.85, 0.7, 0.45)[i]
+                top = QColor(int(top.red() + (250 - top.red()) * k), int(top.green() + (252 - top.green()) * k),
+                             int(top.blue() + (255 - top.blue()) * k))
             g = QLinearGradient(0, base - amp, 0, base + 30)
             g.setColorAt(0, top)
             g.setColorAt(1, bottom)
@@ -404,6 +455,16 @@ class SceneWidget(QWidget):
                 p.setOpacity(m["fireflies"] * (0.35 + 0.65 * (0.5 + 0.5 * math.sin(t * 1.9 + ph * 3))))
                 p.drawPixmap(QPointF(x - 20, y - 20), fly)
             p.setOpacity(1.0)
+        if m["snow"] > 0.02:
+            p.setPen(Qt.NoPen)
+            for flake in self.flakes:
+                x = flake.x + self.px * (4 + 14 * flake.depth) + math.sin(self.t * 1.2 + flake.phase) * flake.sway * 0.3
+                a = m["snow"] * (0.55 + 0.45 * flake.depth)
+                # chłodna obwódka sprawia, że płatek widać także na jasnym, zimowym niebie
+                p.setBrush(QColor(90, 125, 170, int(110 * a)))
+                p.drawEllipse(QPointF(x, flake.y), flake.size + 0.9, flake.size + 0.9)
+                p.setBrush(QColor(255, 255, 255, int(255 * a)))
+                p.drawEllipse(QPointF(x, flake.y), flake.size, flake.size)
         amount = m["petals"]
         p.setPen(Qt.NoPen)
         petal_color = m.color("petal", 0.9)
@@ -433,6 +494,8 @@ class FxOverlay(QWidget):
         self.setAttribute(Qt.WA_NoSystemBackground)
         self.sparks: list = []
         self.ripples: list = []
+        self.shards: list = []        # rozsypujące się okno: płatki / liście / śnieg
+        self.streaks: list = []       # świetliste cięcie przez krzyżyk
         self.last_pos = None
         QApplication.instance().installEventFilter(self)
 
@@ -468,13 +531,39 @@ class FxOverlay(QWidget):
         for r in self.ripples:
             r[2] += dt
         self.ripples = [r for r in self.ripples if r[2] < 0.55]
+        for sh in self.shards:
+            sh[0] += sh[2] * dt
+            sh[1] += sh[3] * dt
+            sh[3] += 240 * dt
+            sh[2] *= 1 - 0.6 * dt
+            sh[4] += sh[5] * dt
+            sh[6] -= dt
+        self.shards = [sh for sh in self.shards if sh[6] > 0]
+        for st in self.streaks:
+            st[2] += dt
+        self.streaks = [st for st in self.streaks if st[2] < 0.5]
         self.update()
+
+    def slash_streak(self, x: float, y: float) -> None:
+        self.streaks.append([x, y, 0.0])
+
+    def shatter(self, origin_x: float, origin_y: float, count: int = 170) -> None:
+        """Okno rozsypuje się od miejsca cięcia: płatki (dzień/noc), liście (lato), śnieg (zima)."""
+        w, h = max(1, self.width()), max(1, self.height())
+        for _ in range(count):
+            x, y = random.uniform(0, w), random.uniform(0, h)
+            dx, dy = x - origin_x, y - origin_y
+            dist = max(30.0, math.hypot(dx, dy))
+            push = random.uniform(60, 190)
+            self.shards.append([x, y, dx / dist * push + random.uniform(-30, 30), dy / dist * push * 0.4 - random.uniform(40, 140),
+                                random.uniform(0, 360), random.uniform(-260, 260), random.uniform(0.9, 1.5),
+                                random.uniform(2.6, 6.2), random.random()])
 
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         m = self.scene.mood
-        self.scene.hero.draw(p, m.color("robe"), m.color("scarf"))
+        self.scene.hero.draw(p, m.color("robe"), m.color("scarf"), winter=m["winter"], summer=m["summer"])
         p.setPen(Qt.NoPen)
         for x, y, vx, vy, life, size in self.sparks:
             c = m.color("accent2", min(1.0, life * 1.3))
@@ -486,6 +575,30 @@ class FxOverlay(QWidget):
             p.setBrush(Qt.NoBrush)
             p.setPen(QPen(c, 2.0 * (1 - u) + 0.5))
             p.drawEllipse(QPointF(x, y), 4 + 26 * u, 4 + 26 * u)
+        for x, y, age in self.streaks:
+            u = age / 0.5
+            for width, alpha in ((14, 0.25), (6, 0.6), (2.2, 1.0)):
+                p.setPen(QPen(QColor(255, 255, 255, int(255 * alpha * (1 - u))), width * (1 - 0.5 * u), Qt.SolidLine, Qt.RoundCap))
+                reach = 34 + 30 * min(1.0, u * 3)
+                p.drawLine(QLineF(x - reach, y + reach * 0.55, x + reach, y - reach * 0.55))
+        if self.shards:
+            snow = m["snow"] > 0.5
+            base = m.color("petal")
+            p.setPen(Qt.NoPen)
+            for x, y, vx, vy, rot, vrot, life, size, tone in self.shards:
+                c = QColor(base)
+                if not snow:
+                    c = c.lighter(100 + int(tone * 30))
+                c.setAlphaF(max(0.0, min(1.0, life * 1.4)))
+                p.save()
+                p.translate(x, y)
+                p.rotate(rot)
+                p.setBrush(c)
+                if snow:
+                    p.drawEllipse(QPointF(0, 0), size * 0.55, size * 0.55)
+                else:
+                    p.drawEllipse(QPointF(0, 0), size, size * 0.55)
+                p.restore()
         p.end()
 
 

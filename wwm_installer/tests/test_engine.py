@@ -265,6 +265,8 @@ def fast_watch(monkeypatch):
     monkeypatch.setattr(Engine, "CONFIRM_SECONDS", 1.0)
     monkeypatch.setattr(Engine, "GERMAN_FALLBACK", 1.0)
     monkeypatch.setattr(Engine, "WATCH_TIMEOUT", 8)
+    monkeypatch.setattr(Engine, "LAUNCHER_WATCH_TIMEOUT", 8)
+    monkeypatch.setattr(Engine, "GAME_CONFIRM_SECONDS", 1.0)
 
 
 def installed(world, server, session, lang="en"):
@@ -516,3 +518,199 @@ def test_story_not_published_yet(world, server, session):
 def test_story_version_file(world, server, session):
     world.publish_story("0.2.0")
     assert fetch_server_version(server + "fabula/", session) == "0.2.0"
+
+
+# ------------------------------------------------- oficjalny launcher: pliki w LocalData\Patch
+
+def test_launcher_layout_is_recognised_and_resolved(lworld):
+    assert core.is_valid_game_path(lworld.game)
+    assert not core.is_valid_game_path(lworld.game.parent)                       # sam folder „wwm”
+    assert core.resolve_game_root(lworld.game.parent) == lworld.game             # wskazano za wysoko
+    assert core.resolve_game_root(lworld.game / core.DIFF_DIR) == lworld.game    # wskazano locale
+    assert core.resolve_game_root(lworld.game / "Engine" / "Binaries" / "Win64r") == lworld.game
+    assert core.resolve_game_root(lworld.game.parent.parent / "nic") is None
+
+
+def test_launcher_install_restore_and_launch(lworld, lserver, session, monkeypatch, fast_watch):
+    lworld.publish()
+    lworld.install_game_files("en")
+    main = lworld.game / core.DIFF_DIR / lworld.name("en", "main")
+    engine(lworld, lserver, session).install()
+    assert main.read_bytes() == lworld.translated("en", "main")                 # plik główny podmieniony w Patch
+    assert not (lworld.game / core.PACKAGE_DIR).exists()                       # nic nie trafia do Package
+    assert compute_status(lworld.game, "en", "1.0.0").state == "current"
+    assert read_version_file(lworld.game) == "1.0.0"                           # polish_version.txt obok plików
+    monkeypatch.setattr(operations, "start_game", FakeGame(lworld, "en"))
+    monkeypatch.setattr(Engine, "_game_running", lambda self: True)
+    assert engine(lworld, lserver, session).launch(str(lworld.game), "launcher") == "patched"
+    assert lworld.diff("en").read_bytes() == lworld.translated("en", "diff")
+    assert engine(lworld, lserver, session).restore() == []
+    assert main.read_bytes() == lworld.original("en", "main")
+
+
+def test_launcher_without_language_files_gives_clear_message(lworld, lserver, session):
+    lworld.publish()
+    with pytest.raises(OperationError, match="Uruchom grę raz"):
+        engine(lworld, lserver, session).install()
+
+
+def test_find_launch_exe_prefers_launcher_and_ignores_case(lworld):
+    game_exe = lworld.game / "Engine" / "Binaries" / "Win64r" / "wwm.exe"
+    game_exe.write_bytes(b"MZ")
+    assert core.find_launch_exe(lworld.game) == game_exe                       # małe litery też pasują
+    launcher = lworld.game.parent / "WWM_Launcher.exe"
+    launcher.write_bytes(b"MZ")
+    (lworld.game.parent / "uninst_launcher.exe").write_bytes(b"MZ")
+    assert core.find_launch_exe(lworld.game) == launcher                       # launcher ma pierwszeństwo
+
+
+def test_find_game_path_scans_drives_for_launcher(lworld, monkeypatch):
+    monkeypatch.setattr(core, "_available_drives", lambda: [str(lworld.game.parent.parent)])
+    monkeypatch.setattr(core, "LAUNCHER_RELATIVE", ["wwm"])
+    monkeypatch.setattr(core, "LAUNCHER_CANDIDATES", [])
+    monkeypatch.setattr(core, "_registry_install_locations", lambda log: [])
+    monkeypatch.setattr(core, "_epic_install_locations", lambda log: [])
+    assert core.find_game_path("launcher") == str(lworld.game)
+
+
+def test_steam_main_file_follows_patch_copy_if_game_downloaded_one(world, server, session):
+    """Gdy gra (także Steam) trzyma nowszy plik główny w Patch, podmieniamy ten, którego gra używa."""
+    world.publish()
+    patch_main = world.game / core.DIFF_DIR / world.name("en", "main")
+    patch_main.parent.mkdir(parents=True, exist_ok=True)
+    patch_main.write_bytes(world.original("en", "main"))
+    world.install_game_files("en")
+    engine(world, server, session).install()
+    assert patch_main.read_bytes() == world.translated("en", "main")
+
+
+def test_launcher_search_skips_steam_and_finds_nested_wwm_standard(tmp_path, monkeypatch):
+    """Steam i launcher na jednym dysku: dla launchera nie wolno wybrać folderu ze Steam."""
+    drive = tmp_path / "D"
+    steam_game = drive / "SteamLibrary" / "steamapps" / "common" / "Where Winds Meet"
+    (steam_game / core.PACKAGE_DIR).mkdir(parents=True)
+    launcher_game = drive / "SteamLibrary" / "wwm_standard"          # jak u Arimy: D:\SteamLibrary\wwm_standard
+    (launcher_game / core.DIFF_DIR).mkdir(parents=True)
+    monkeypatch.setattr(core, "_available_drives", lambda: [str(drive)])
+    monkeypatch.setattr(core, "LAUNCHER_CANDIDATES", [])
+    monkeypatch.setattr(core, "_registry_install_locations", lambda log: [steam_game])   # wpis Steama w rejestrze
+    monkeypatch.setattr(core, "_executed_game_paths", lambda log: [])
+    monkeypatch.setattr(core, "_epic_install_locations", lambda log: [])
+    assert core.find_game_path("launcher") == str(launcher_game)
+
+
+def test_launcher_search_prefers_recently_used_install(tmp_path, monkeypatch):
+    import os
+    drive = tmp_path / "E"
+    standard = drive / "Games" / "wwm" / "wwm_standard"
+    lite = drive / "Games" / "wwm" / "wwm_lite"
+    for root in (standard, lite):
+        (root / core.DIFF_DIR).mkdir(parents=True)
+    os.utime(standard / core.DIFF_DIR, (1_000_000, 1_000_000))       # standard dawno nieużywany
+    monkeypatch.setattr(core, "_available_drives", lambda: [str(drive)])
+    monkeypatch.setattr(core, "LAUNCHER_CANDIDATES", [])
+    monkeypatch.setattr(core, "_registry_install_locations", lambda log: [])
+    monkeypatch.setattr(core, "_executed_game_paths", lambda log: [])
+    monkeypatch.setattr(core, "_epic_install_locations", lambda log: [])
+    assert core.find_game_path("launcher") == str(lite)
+
+
+def test_launcher_config_and_run_traces_are_used(tmp_path, monkeypatch):
+    game = tmp_path / "X" / "anything" / "wwm_lite"
+    (game / core.DIFF_DIR).mkdir(parents=True)
+    (game / "Engine" / "Binaries" / "Win64r").mkdir(parents=True)
+    launcher_dir = tmp_path / "ProgramFiles" / "wwm"
+    launcher_dir.mkdir(parents=True)
+    (launcher_dir / "config.json").write_text('{"gamePath": "%s"}' % str(game).replace("\\", "\\\\"))
+    log = __import__("wwmpl.logs", fromlist=["get"]).get()
+    found = core._launcher_config_paths([launcher_dir], log)
+    if game.drive:                                                   # wzorzec ścieżek dotyczy dysków Windows
+        assert any(core.resolve_game_root(p) == game for p in found)
+    monkeypatch.setattr(core, "_available_drives", lambda: [])
+    monkeypatch.setattr(core, "LAUNCHER_CANDIDATES", [])
+    monkeypatch.setattr(core, "_registry_install_locations", lambda log: [])
+    monkeypatch.setattr(core, "_epic_install_locations", lambda log: [])
+    monkeypatch.setattr(core, "_executed_game_paths", lambda log: [game / "Engine" / "Binaries" / "Win64r"])
+    assert core.find_game_path("launcher") == str(game)
+
+
+def test_real_layout_from_arima_diagnostics(tmp_path, monkeypatch):
+    """Odwzorowanie raportu diagnostycznego: Steam + launcher, setting.ini z InstallPath, gra bez Package."""
+    drive = tmp_path / "D"
+    steam_game = drive / "SteamLibrary" / "steamapps" / "common" / "Where Winds Meet"
+    (steam_game / core.PACKAGE_DIR).mkdir(parents=True)
+    (steam_game / core.DIFF_DIR).mkdir(parents=True)
+    game = drive / "SteamLibrary" / "wwm_standard"
+    (game / core.DIFF_DIR).mkdir(parents=True)
+    (game / core.DIFF_DIR / "translate_words_map_en").write_bytes(b"x")
+    for sub in ("Win64r", "Win64rh"):
+        (game / "Engine" / "Binaries" / sub).mkdir(parents=True)
+        (game / "Engine" / "Binaries" / sub / "wwm.exe").write_bytes(b"MZ")
+    launcher = tmp_path / "Program Files" / "wwm"
+    deploy = launcher / "Win32" / "deploy"
+    deploy.mkdir(parents=True)
+    (deploy / "launcher.exe").write_bytes(b"MZ")
+    (deploy / "updater.exe").write_bytes(b"MZ")
+    (launcher / "uninstaller.exe").write_bytes(b"MZ")
+    (deploy / "setting.ini").write_text(f"[General]\nlang=en\nchannel=netease_global\n\nInstallPath={game.as_posix()}\n")
+    monkeypatch.setattr(core, "_netease_launcher_dirs", lambda log: [launcher])
+    monkeypatch.setattr(core, "_registry_install_locations", lambda log: [steam_game, deploy, launcher])
+    monkeypatch.setattr(core, "_executed_game_paths",
+                        lambda log: [steam_game / "Engine" / "Binaries" / "Win64r"])   # ślad Steama – ignorowany
+    monkeypatch.setattr(core, "_epic_install_locations", lambda log: [])
+    monkeypatch.setattr(core, "_available_drives", lambda: [str(drive)])
+    monkeypatch.setattr(core, "LAUNCHER_CANDIDATES", [])
+    assert core.find_game_path("launcher") == str(game)
+    assert core.find_official_launcher() == deploy / "launcher.exe"
+    assert core.FileSpec("translate_words_map_en", "a" * 64, "b" * 64).target(game).parent == game / core.DIFF_DIR
+    assert core.find_launch_exe(game).parent.name == "Win64r"
+
+
+
+class FakeOfficialLauncher:
+    """Zachowanie oficjalnego launchera: weryfikuje pliki (przywraca oryginalny diff I plik główny),
+    a grę uruchamia dopiero po chwili („Graj”). Gra przy starcie jeszcze raz przywraca diff."""
+
+    def __init__(self, world, lang="en"):
+        self.world, self.lang = world, lang
+        self.game_started = False
+
+    def __call__(self, game_path, platform, notify):
+        threading.Thread(target=self.run, daemon=True).start()
+
+    def run(self):
+        w, lang = self.world, self.lang
+        time.sleep(0.3)
+        w.diff(lang).write_bytes(w.original(lang, "diff"))       # weryfikacja w launcherze
+        w.pkg(lang).write_bytes(w.original(lang, "main"))        # launcher „naprawia” też plik główny
+        time.sleep(2.0)                                          # gracz klika „Graj”
+        self.game_started = True
+        time.sleep(0.3)
+        w.diff(lang).write_bytes(w.original(lang, "diff"))       # gra sprawdza pliki przy starcie
+
+
+def test_official_launcher_waits_for_game_and_keeps_translation(lworld, lserver, session, monkeypatch, fast_watch):
+    lworld.publish()
+    lworld.install_game_files("en")
+    engine(lworld, lserver, session).install()
+    launcher = FakeOfficialLauncher(lworld)
+    monkeypatch.setattr(operations, "start_game", launcher)
+    monkeypatch.setattr(Engine, "_game_running", lambda self: launcher.game_started)
+    started = time.monotonic()
+    e = engine(lworld, lserver, session)
+    assert e.launch(str(lworld.game), "launcher") == "patched"
+    assert time.monotonic() - started > 2.3                       # nie ogłoszono sukcesu przed startem gry
+    assert lworld.diff("en").read_bytes() == lworld.translated("en", "diff")
+    assert lworld.pkg("en").read_bytes() == lworld.translated("en", "main")
+    assert any("czekam na uruchomienie gry" in text.lower() or "graj" in text.lower() for _, text in e.log)
+
+
+def test_launch_repairs_main_file_restored_by_launcher(lworld, lserver, session, monkeypatch, fast_watch):
+    lworld.publish()
+    lworld.install_game_files("en")
+    engine(lworld, lserver, session).install()
+    lworld.pkg("en").write_bytes(lworld.original("en", "main"))  # launcher przywrócił oryginał między sesjami
+    monkeypatch.setattr(operations, "start_game", FakeGame(lworld, "en"))
+    monkeypatch.setattr(Engine, "_game_running", lambda self: True)
+    assert engine(lworld, lserver, session).launch(str(lworld.game), "launcher") == "patched"
+    assert lworld.pkg("en").read_bytes() == lworld.translated("en", "main")
