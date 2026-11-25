@@ -709,48 +709,6 @@ def _recent_activity(root: Path) -> float:
     return 0.0
 
 
-def _registry_values(hive, key_name: str) -> list:
-    names = []
-    if winreg is None:
-        return names
-    try:
-        with winreg.OpenKey(hive, key_name) as key:
-            count = winreg.QueryInfoKey(key)[1]
-            for index in range(count):
-                try:
-                    names.append(winreg.EnumValue(key, index)[0])
-                except OSError:
-                    continue
-    except OSError:
-        pass
-    return names
-
-
-def _executed_game_paths(log) -> list:
-    """Ślady uruchomionej gry/launchera zapisane przez Windows (MuiCache, Asystent zgodności programów)."""
-    found = []
-    if winreg is None:
-        return found
-    sources = (
-        (winreg.HKEY_CURRENT_USER, r"Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache"),
-        (winreg.HKEY_CURRENT_USER,
-         r"Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Compatibility Assistant\Store"),
-    )
-    for hive, key_name in sources:
-        for name in _registry_values(hive, key_name):
-            lower = name.casefold()
-            if ".exe" not in lower:
-                continue
-            exe = name[:lower.index(".exe") + 4]
-            exe_lower = exe.casefold()
-            looks_like_game = ("\\engine\\binaries\\" in exe_lower and exe_lower.endswith("\\wwm.exe")) or \
-                any(f"\\{folder}\\" in exe_lower for folder in LAUNCHER_GAME_FOLDERS)
-            if looks_like_game and not is_steam_path(exe):
-                log.info("Ślad uruchomienia (%s): %s", key_name.rsplit("\\", 1)[-1], exe)
-                found.append(Path(exe).parent)
-    return found
-
-
 def _launcher_config_paths(folders: list, log) -> list:
     """Pliki konfiguracyjne launchera (np. C:\\Program Files\\wwm) – szukamy w nich ścieżek wwm_standard/lite."""
     found = []
@@ -857,7 +815,6 @@ def find_launcher_game(log) -> Optional[str]:
         log.warning("setting.ini wskazuje %s, ale nie ma tam plików gry", path)
     launcher_dirs = [d for d in install_dirs if not is_steam_path(d)]
     candidates = []
-    candidates += _executed_game_paths(log)
     candidates += _launcher_config_paths(launcher_dirs, log)
     candidates += launcher_dirs
     candidates += _epic_install_locations(log)
@@ -938,17 +895,42 @@ GAME_EXE_NAMES = ("wherewindsmeet.exe", "wwm.exe", "wwm_game.exe")
 GAME_PROCESS = "wwm.exe"
 
 
-def process_running(name: str = GAME_PROCESS) -> bool:
-    """Czy działa proces o danej nazwie (Windows: tasklist, bez okna konsoli)."""
-    if os.name != "nt":
-        return False
-    import subprocess
+def game_exe_candidates(root: Path) -> list:
+    """Pliki wwm.exe gry (wersja globalna Win64r, serwery HK/TW Win64rh) – bez względu na wielkość liter."""
+    found = []
+    binaries = Path(root) / "Engine" / "Binaries"
     try:
-        result = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {name}", "/FO", "CSV", "/NH"],
-                                capture_output=True, text=True, timeout=6, creationflags=0x08000000)
-    except (OSError, subprocess.SubprocessError):
+        folders = [d for d in binaries.iterdir() if d.is_dir() and d.name.casefold().startswith("win64")]
+    except OSError:
+        return found
+    for folder in folders:
+        try:
+            found += [f for f in folder.iterdir() if f.name.casefold() == GAME_PROCESS]
+        except OSError:
+            continue
+    return found
+
+
+IS_WINDOWS = os.name == "nt"
+
+
+def process_running(root) -> bool:
+    """Czy gra działa – bez przeglądania listy procesów. Windows blokuje plik uruchomionego programu, więc
+    próba otwarcia wwm.exe do zapisu kończy się odmową dostępu. Nic nie jest zapisywane: plik jest tylko
+    otwierany i od razu zamykany; pliki „tylko do odczytu” pomijamy, by nie dawały fałszywego wyniku."""
+    if not IS_WINDOWS or root is None:
         return False
-    return f'"{name.casefold()}"' in (result.stdout or "").casefold()
+    for exe in game_exe_candidates(Path(root)):
+        try:
+            if not os.access(exe, os.W_OK):
+                continue
+            with open(exe, "r+b"):
+                pass
+        except PermissionError:
+            return True
+        except OSError:
+            continue
+    return False
 
 
 def find_official_launcher(log=None) -> Optional[Path]:

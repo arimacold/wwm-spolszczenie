@@ -594,7 +594,6 @@ def test_launcher_search_skips_steam_and_finds_nested_wwm_standard(tmp_path, mon
     monkeypatch.setattr(core, "_available_drives", lambda: [str(drive)])
     monkeypatch.setattr(core, "LAUNCHER_CANDIDATES", [])
     monkeypatch.setattr(core, "_registry_install_locations", lambda log: [steam_game])   # wpis Steama w rejestrze
-    monkeypatch.setattr(core, "_executed_game_paths", lambda log: [])
     monkeypatch.setattr(core, "_epic_install_locations", lambda log: [])
     assert core.find_game_path("launcher") == str(launcher_game)
 
@@ -610,12 +609,11 @@ def test_launcher_search_prefers_recently_used_install(tmp_path, monkeypatch):
     monkeypatch.setattr(core, "_available_drives", lambda: [str(drive)])
     monkeypatch.setattr(core, "LAUNCHER_CANDIDATES", [])
     monkeypatch.setattr(core, "_registry_install_locations", lambda log: [])
-    monkeypatch.setattr(core, "_executed_game_paths", lambda log: [])
     monkeypatch.setattr(core, "_epic_install_locations", lambda log: [])
     assert core.find_game_path("launcher") == str(lite)
 
 
-def test_launcher_config_and_run_traces_are_used(tmp_path, monkeypatch):
+def test_launcher_config_and_candidates_are_used(tmp_path, monkeypatch):
     game = tmp_path / "X" / "anything" / "wwm_lite"
     (game / core.DIFF_DIR).mkdir(parents=True)
     (game / "Engine" / "Binaries" / "Win64r").mkdir(parents=True)
@@ -630,7 +628,8 @@ def test_launcher_config_and_run_traces_are_used(tmp_path, monkeypatch):
     monkeypatch.setattr(core, "LAUNCHER_CANDIDATES", [])
     monkeypatch.setattr(core, "_registry_install_locations", lambda log: [])
     monkeypatch.setattr(core, "_epic_install_locations", lambda log: [])
-    monkeypatch.setattr(core, "_executed_game_paths", lambda log: [game / "Engine" / "Binaries" / "Win64r"])
+    monkeypatch.setattr(core, "_netease_launcher_dirs", lambda log: [])
+    monkeypatch.setattr(core, "LAUNCHER_CANDIDATES", [str(game.parent)])   # folder wyżej – korzeń znajdzie się sam
     assert core.find_game_path("launcher") == str(game)
 
 
@@ -655,8 +654,6 @@ def test_real_layout_from_arima_diagnostics(tmp_path, monkeypatch):
     (deploy / "setting.ini").write_text(f"[General]\nlang=en\nchannel=netease_global\n\nInstallPath={game.as_posix()}\n")
     monkeypatch.setattr(core, "_netease_launcher_dirs", lambda log: [launcher])
     monkeypatch.setattr(core, "_registry_install_locations", lambda log: [steam_game, deploy, launcher])
-    monkeypatch.setattr(core, "_executed_game_paths",
-                        lambda log: [steam_game / "Engine" / "Binaries" / "Win64r"])   # ślad Steama – ignorowany
     monkeypatch.setattr(core, "_epic_install_locations", lambda log: [])
     monkeypatch.setattr(core, "_available_drives", lambda: [str(drive)])
     monkeypatch.setattr(core, "LAUNCHER_CANDIDATES", [])
@@ -747,3 +744,25 @@ def test_steam_main_file_restored_still_requires_install(world, server, session)
     engine(world, server, session).install()
     world.pkg("en").write_bytes(world.original("en", "main"))       # Steam: weryfikacja spójności plików
     assert compute_status(world.game, "en", "1.0.0").state == "incomplete"
+
+
+def test_game_running_check_uses_exe_lock_not_process_list(tmp_path, monkeypatch):
+    """Bez tasklist/listy procesów: uruchomiony wwm.exe jest zablokowany do zapisu przez Windows."""
+    exe = tmp_path / "Engine" / "Binaries" / "Win64r" / "WWM.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"MZ")
+    assert core.game_exe_candidates(tmp_path) == [exe]
+    monkeypatch.setattr(core, "IS_WINDOWS", True)
+    assert core.process_running(tmp_path) is False                     # plik otwiera się – gra nie działa
+    assert exe.read_bytes() == b"MZ"                                  # niczego nie zapisano
+    import builtins
+    real_open = builtins.open
+
+    def locked(path, mode="r", *a, **k):
+        if str(path) == str(exe) and "+" in mode:
+            raise PermissionError(13, "sharing violation")
+        return real_open(path, mode, *a, **k)
+    monkeypatch.setattr(builtins, "open", locked)
+    assert core.process_running(tmp_path) is True
+    import inspect
+    assert "tasklist" not in inspect.getsource(core) and "MuiCache" not in inspect.getsource(core)

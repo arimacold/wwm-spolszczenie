@@ -137,7 +137,7 @@ podejrzanie. Ikona i dane wersji pochodzą z `assets/` (`python tools/make_icon.
   launchera, np. `C:\Program Files\wwm`) → `Win32\deploy\setting.ini` → `InstallPath=` (folder gry).
   Launcher uruchamiany jest z `Win32\deploy\launcher.exe`. Gdy tego zapisu brak (nigdy nie wybiera instalacji
   ze Steam – ścieżki ze `steamapps` są pomijane):
-  ślady uruchomionej gry w rejestrze (MuiCache, Asystent zgodności), pliki konfiguracyjne launchera z jego
+  pliki konfiguracyjne launchera z jego
   folderu instalacji (np. `C:\Program Files\wwm`), manifesty Epic oraz foldery `wwm_standard` / `wwm_lite` /
   `wwm_ultimate` na każdym dysku – także jeden poziom niżej (np. `D:\SteamLibrary\wwm_standard`).
   Przy kilku instalacjach wybierana jest ostatnio używana.
@@ -157,9 +157,13 @@ podejrzanie. Ikona i dane wersji pochodzą z `assets/` (`python tools/make_icon.
 - **Diagnostyka**: `tools/wwm_diagnostyka.ps1` (tylko odczyt) zapisuje na pulpicie raport o instalacjach gry,
   launcherze, wpisach w rejestrze i budowie folderów – do wysłania przy problemach z wykrywaniem.
 - **Wstrzykiwanie z oficjalnym launcherem**: launcher sam weryfikuje i pobiera pliki zanim uruchomi grę,
-  dlatego przy platformie „Epic / Launcher” instalator nie ogłasza sukcesu po samej podmianie: czeka na proces
+  dlatego przy platformie „Epic / Launcher” instalator nie ogłasza sukcesu po samej podmianie: czeka na start
   gry `wwm.exe` (do 20 min) i ogłasza sukces dopiero, gdy gra działa 30 s z tłumaczeniem. Pilnuje też pliku
   głównego w `LocalData\Patch` i od razu przywraca tłumaczenie, gdy launcher/gra podmieni go na oryginał.
+- **Bez fałszywych alarmów antywirusa (2.3.1)**: instalator nie czyta historii uruchomionych programów
+  z rejestru i nie uruchamia `tasklist`. To, czy gra działa, sprawdza po blokadzie pliku `wwm.exe`
+  (Windows nie pozwala otworzyć uruchomionego programu do zapisu; plik jest tylko otwierany i zamykany,
+  nic nie jest zapisywane).
 - **Weryfikacja launchera po zamknięciu gry (2.3.0)**: launcher przywraca wtedy oryginalny plik główny
   w `LocalData\Patch`. Instalator nie traktuje tego jako uszkodzonej instalacji – status zostaje
   „TŁUMACZENIE AKTUALNE” z dopiskiem, a „Uruchom grę (PL)” wgrywa tłumaczenie z kopii lokalnej

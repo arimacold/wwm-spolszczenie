@@ -26,7 +26,7 @@ from .scene import FxOverlay, SceneWidget, make_cursor, make_icon
 from .widgets import (TITLE_FAMILIES, AuthorsFlyout, GlassCard, GlowButton, CountdownToast, IconTile, LogPanel, MessageDialog, PathPill, VariantPicker, ProgressTrack, Segmented,
                       ShadowLabel, StatusBadge, TitleBar, Theme, body_font)
 
-APP_VERSION = "2.3.0"
+APP_VERSION = "2.3.1"
 MOOD_FOR_LANGUAGE = {"en": "day", "de": "night"}
 STATUS_COLORS = {"other_variant": "#ffc94d", "current": "#3ddc84", "outdated": "#ffc94d", "incomplete": "#ffc94d", "legacy": "#ffc94d",
                  "unknown": "#ffc94d", "none": "#ff7a7a", "no_game": "#ff5d5d", "error": "#ff7a7a"}

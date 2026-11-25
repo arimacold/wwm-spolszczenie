@@ -395,7 +395,7 @@ class Engine:
         return time.monotonic() - started
 
     def _game_running(self) -> bool:
-        return process_running()
+        return process_running(self.root)
 
     def _guard_main_files(self, guarded: list, sigs: dict) -> None:
         """Plik główny w LocalData\\Patch: gdy launcher/gra przywróci oryginał – od razu podmieniamy z kopii."""
