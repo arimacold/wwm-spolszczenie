@@ -1,14 +1,14 @@
 {
-  "version": "0.0.18a",
+  "version": "0.0.19a",
   "languages": {
     "en": {
       "files": {
         "translate_words_map_en": {
-          "sha256": "4ead3d056c2dc3e9061a7d8901d2aa71b4327326e0c6bc51cfcb511961a80e35",
+          "sha256": "37f7fcd93ecbd442d25911e78cd571a593a071bf4b1b70ee8d29100592fc8888",
           "original": "9a2bb446dc2dcc1e2bb4b1bb3207e2990ef7533341a9035ef376c545c3bbdbef"
         },
         "translate_words_map_en_diff": {
-          "sha256": "9aae0143ed66926f202ffd52ba6e4a557ff59502768a702c0ef609d5e13b6940",
+          "sha256": "6efc84803b8eeb2a586ba3dec7b93d69b4d5d9ffbca562a7f843abe408b0fe29",
           "original": "b25ce2a3e256368bc88119a21e3a251199b00e5152dbbf7b14312099e1fa6d45"
         }
       }
@@ -16,11 +16,11 @@
     "de": {
       "files": {
         "translate_words_map_de": {
-          "sha256": "4ead3d056c2dc3e9061a7d8901d2aa71b4327326e0c6bc51cfcb511961a80e35",
+          "sha256": "37f7fcd93ecbd442d25911e78cd571a593a071bf4b1b70ee8d29100592fc8888",
           "original": "c87f57b5f986a686b3d4ea907ac1076b17038f4c8e9b0c832263fbdd298af07a"
         },
         "translate_words_map_de_diff": {
-          "sha256": "9aae0143ed66926f202ffd52ba6e4a557ff59502768a702c0ef609d5e13b6940",
+          "sha256": "6efc84803b8eeb2a586ba3dec7b93d69b4d5d9ffbca562a7f843abe408b0fe29",
           "original": "2cae7d76ebb3f3aeae89a441891e4914f5cfba4d529ad32d4b8834dbb5a5f11e"
         }
       }
